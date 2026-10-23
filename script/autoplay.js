@@ -70,8 +70,115 @@
     return best;
   }
 
+
+  function ready(el) {
+    return visible(el) && !el.hasAttribute('disabled') &&
+      !el.classList.contains('disabled') &&
+      !el.classList.contains('onCooldown') &&
+      el.getAttribute('aria-disabled') !== 'true';
+  }
+
+  function clickReady(el) {
+    if (!ready(el) || Date.now() - lastAction < 900) return false;
+    el.click();
+    lastAction = Date.now();
+    return true;
+  }
+
+  function eventChoiceScore(el, info) {
+    var label = norm((el.innerText || el.textContent) + ' ' + el.id);
+    var value = 0;
+    // Prefer non-violent, useful outcomes and progress; avoid paying scarce
+    // resources for vague outcomes when a clear reward is available.
+    if (/take all|take everything|collect all|loot_takeeverything/.test(label)) value += 180;
+    if (/leave|return|escape|retreat|run away/.test(label)) value -= 15;
+    if (/fight|attack|kill|hunt/.test(label)) value += 12;
+    if (/help|save|rescue|free|protect/.test(label)) value += 28;
+    if (/trade|buy|purchase|give|pay|offer/.test(label)) value -= 8;
+    if (/steal|rob|threaten|insult|betray/.test(label)) value -= 18;
+    if (/ignore|refuse|decline/.test(label)) value -= 10;
+    if (/continue|next/.test(label)) value += 5;
+
+    if (info) {
+      var reward = info.reward || {};
+      Object.keys(reward).forEach(function (key) {
+        var n = Number(reward[key]) || 0;
+        value += n * (/fur|teeth|scale|bait|meat|herb|medicine|medicine|iron|steel|leather|cloth|torch|cured meat|water/.test(key) ? 3 : 1);
+      });
+      var cost = info.cost || {};
+      Object.keys(cost).forEach(function (key) {
+        var n = Number(cost[key]) || 0;
+        var available = window.Path && Path.outfit ? Number(Path.outfit[key]) || 0 : 0;
+        value -= n * (available <= n * 2 ? 8 : 2);
+      });
+      if (info.nextScene && info.nextScene !== 'end') value += 4;
+      if (info.link) value -= 100;
+    }
+    return value;
+  }
+
+  function handleEvent() {
+    if (!window.Events || typeof Events.activeEvent !== 'function') return false;
+    var event = Events.activeEvent();
+    if (!event || !event.eventPanel || !visible(event.eventPanel[0])) return false;
+
+    var panel = event.eventPanel[0];
+    var enemy = panel.querySelector('#enemy');
+    var lootAll = panel.querySelector('#loot_takeEverything');
+    if (lootAll && ready(lootAll)) return clickReady(lootAll);
+
+    // Combat: heal only when needed, then use the strongest affordable
+    // attack that is off cooldown. Native combat logic still controls damage.
+    if (enemy && visible(enemy)) {
+      var player = panel.querySelector('#wanderer');
+      var hp = player && Number(window.jQuery ? jQuery(player).data('hp') : player.getAttribute('data-hp'));
+      var maxHp = window.World && typeof World.getMaxHealth === 'function' ? World.getMaxHealth() : 0;
+      if (hp > 0 && maxHp > 0 && hp / maxHp <= 0.38) {
+        var heal = Array.prototype.slice.call(panel.querySelectorAll('#healButtons .button, #buttons #eat, #buttons #meds, #buttons #hypo'))
+          .filter(ready)
+          .sort(function(a,b) {
+            var rank = function(el) { return el.id === 'hypo' ? 3 : el.id === 'meds' ? 2 : el.id === 'eat' ? 1 : 0; };
+            return rank(b) - rank(a);
+          })[0];
+        if (heal) return clickReady(heal);
+      }
+      var attacks = Array.prototype.slice.call(panel.querySelectorAll('#attackButtons .button, .weaponButton, #attack_fists')).filter(ready);
+      attacks.sort(function(a,b) {
+        function attackValue(el) {
+          var name = el.id.replace(/^attack_/, '').replace(/-/g, ' ');
+          var weapon = window.World && World.Weapons && World.Weapons[name];
+          if (!weapon) return el.id === 'attack_fists' ? 1 : 0;
+          var cost = weapon.cost || {};
+          var scarcity = Object.keys(cost).reduce(function(sum,key) {
+            var have = window.Path && Path.outfit ? Number(Path.outfit[key]) || 0 : 0;
+            return sum + (have <= (Number(cost[key]) || 0) * 2 ? 8 : 0);
+          },0);
+          return (Number(weapon.damage) || 0) / Math.max(Number(weapon.cooldown) || 1, 1) - scarcity;
+        }
+        return attackValue(b) - attackValue(a);
+      });
+      if (attacks.length) return clickReady(attacks[0]);
+      return true;
+    }
+
+    // Story/event branch: evaluate the actual event choices, including their
+    // declared costs and rewards, instead of clicking unrelated room controls.
+    var buttons = Array.prototype.slice.call(panel.querySelectorAll('#exitButtons .button, #buttons > .button, #buttons .button'))
+      .filter(ready)
+      .filter(function(el) { return !el.closest('#healButtons') && !el.closest('#attackButtons'); });
+    if (!buttons.length) return true;
+    var scene = event.scenes && event.scenes[Events.activeScene];
+    var definitions = scene && scene.buttons || {};
+    buttons.sort(function(a,b) {
+      return eventChoiceScore(b, definitions[b.id]) - eventChoiceScore(a, definitions[a.id]);
+    });
+    return clickReady(buttons[0]);
+  }
+
   function tick() {
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
+    // Resolve active random events before normal settlement/exploration actions.
+    if (handleEvent()) return;
     // Prefer buttons in the current view; the game's own disabled state
     // prevents spending resources that are unavailable.
     var candidates = Array.prototype.slice.call(document.querySelectorAll(
