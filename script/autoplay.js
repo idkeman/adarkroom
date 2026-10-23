@@ -6,20 +6,8 @@
   var enabled = false;
   var timer = null;
   var lastAction = 0;
-  var status;
-
-  function addStatus() {
-    if (document.getElementById('adr-autoplay-status')) return;
-    status = document.createElement('div');
-    status.id = 'adr-autoplay-status';
-    status.textContent = 'Autoplay: OFF  (Ctrl+P)';
-    status.style.cssText = 'position:fixed;z-index:99999;right:12px;bottom:12px;padding:7px 10px;background:#222;color:#ddd;border:1px solid #555;font:12px monospace;opacity:.88;pointer-events:none';
-    document.body.appendChild(status);
-  }
-
   function setEnabled(value) {
     enabled = value;
-    if (status) status.textContent = 'Autoplay: ' + (enabled ? 'ON' : 'OFF') + '  (Ctrl+P)';
     if (enabled) {
       if (!timer) timer = window.setInterval(tick, 1200);
       tick();
@@ -84,8 +72,6 @@
 
   function tick() {
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
-    addStatus();
-
     // Prefer buttons in the current view; the game's own disabled state
     // prevents spending resources that are unavailable.
     var candidates = Array.prototype.slice.call(document.querySelectorAll(
@@ -115,13 +101,7 @@
   document.addEventListener('keydown', function (event) {
     if (!(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'p') || event.repeat) return;
     event.preventDefault();
-    addStatus();
     setEnabled(!enabled);
   });
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', addStatus);
-  } else {
-    addStatus();
-  }
-}());
+})();
