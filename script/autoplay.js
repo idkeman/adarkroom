@@ -52,7 +52,7 @@
     ['build hut', 92], ['build cart', 90], ['build trap', 88],
     ['build lodge', 86], ['build trading post', 84], ['build workshop', 82],
     ['build tannery', 80], ['build smokehouse', 79], ['build steelworks', 78],
-    ['build armoury', 77], ['fabricate', 76], ['craft', 74], ['make', 72],
+    ['build armoury', 77], ['build ', 76], ['fabricate', 76], ['craft', 74], ['make', 72],
     ['upgrade', 70], ['repair', 69], ['reinforce', 68], ['train', 66],
     ['hire', 64], ['gather', 62], ['hunt', 60], ['scavenge', 58],
     ['go inside', 56], ['enter', 55], ['investigate', 54], ['continue', 53],
@@ -185,10 +185,64 @@
     return clickReady(buttons[0]);
   }
 
+
+  function advanceModule() {
+    if (!window.Engine || !Engine.activeModule || Engine.activeModule === window.Space) return false;
+    var route = [window.Room, window.Outside, window.Path, window.Fabricator, window.Ship];
+    var current = route.indexOf(Engine.activeModule);
+    if (current < 0) current = -1;
+    for (var step = 1; step <= route.length; step++) {
+      var module = route[(current + step + route.length) % route.length];
+      if (!module || module === Engine.activeModule || !module.tab || !module.panel) continue;
+      var tab = module.tab.jquery ? module.tab[0] : module.tab;
+      var panel = module.panel.jquery ? module.panel[0] : module.panel;
+      if (!tab || !tab.isConnected || !panel || !panel.isConnected) continue;
+      if (tab.classList.contains('disabled') || tab.getAttribute('aria-disabled') === 'true') continue;
+      if (typeof Engine.travelTo === 'function') {
+        Engine.travelTo(module);
+        lastAction = Date.now();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function manageWorkers() {
+    if (!window.Engine || Engine.activeModule !== window.Outside ||
+        !window.Outside || !window.$SM || !Outside._INCOME) return false;
+    var population = Number($SM.get('game.population')) || 0;
+    var workers = $SM.get('game.workers') || {};
+    var free = typeof Outside.getNumGatherers === 'function' ? Outside.getNumGatherers() : 0;
+    if (free <= 2) return false;
+    var stores = $SM.get('stores') || {};
+    var plans = [
+      { key: 'hunter', count: population >= 4 ? 1 : 0 },
+      { key: 'trapper', count: population >= 7 && (Number(stores.meat) || 0) >= 8 ? 1 : 0 },
+      { key: 'tanner', count: population >= 8 && (Number(stores.fur) || 0) >= 8 ? 1 : 0 },
+      { key: 'charcutier', count: population >= 9 && (Number(stores.meat) || 0) >= 12 && (Number(stores.wood) || 0) >= 12 ? 1 : 0 },
+      { key: 'iron miner', count: population >= 10 && (Number(stores['cured meat']) || 0) >= 8 ? 1 : 0 },
+      { key: 'coal miner', count: population >= 12 && (Number(stores['cured meat']) || 0) >= 12 ? 1 : 0 },
+      { key: 'sulphur miner', count: population >= 14 && (Number(stores['cured meat']) || 0) >= 16 ? 1 : 0 },
+      { key: 'steelworker', count: population >= 16 && (Number(stores.iron) || 0) >= 4 && (Number(stores.coal) || 0) >= 4 ? 1 : 0 },
+      { key: 'armourer', count: population >= 18 && (Number(stores.steel) || 0) >= 4 && (Number(stores.sulphur) || 0) >= 4 ? 1 : 0 }
+    ];
+    for (var i = 0; i < plans.length; i++) {
+      var plan = plans[i];
+      if (plan.count > 0 && (Number(workers[plan.key]) || 0) < plan.count) {
+        var row = document.getElementById('workers_row_' + plan.key.replace(/ /g, '-'));
+        var up = row && row.querySelector('.upBtn:not(.disabled)');
+        if (up && clickReady(up)) return true;
+      }
+    }
+    return false;
+  }
+
   function tick() {
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
     // Resolve active random events before normal settlement/exploration actions.
     if (handleEvent()) return;
+    // Build a sustainable economy without consuming every villager as a worker.
+    if (manageWorkers()) return;
     // Prefer buttons in the current view; the game's own disabled state
     // prevents spending resources that are unavailable.
     var activeRoot = window.Engine && Engine.activeModule && Engine.activeModule.panel;
@@ -210,6 +264,10 @@
       // Avoid blindly repeating a disabled/cooling-down action; each click
       // uses the game's own handlers, costs, unlocks and progression rules.
       clickReady(candidates[0].el);
+    } else {
+      // If this area has no useful available action, continue the walkthrough
+      // by visiting the next unlocked location instead of stalling.
+      advanceModule();
     }
   }
 
