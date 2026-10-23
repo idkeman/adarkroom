@@ -104,10 +104,16 @@
     // A trading post unlocks the buy/sell economy; a cart improves wood
     // gathering; huts expand population and therefore the workforce.
     var ranks = {
-      'trading post': 105, 'cart': 95, 'hut': 76, 'lodge': 72,
+      'trading post': 115, 'cart': 95, 'hut': 76, 'lodge': 72,
       'tannery': 69, 'smokehouse': 68, 'workshop': 65,
       'steelworks': 62, 'armoury': 59, 'trap': 56,
-      'compass': 110, 'rucksack': 88, 'wagon': 82, 'convoy': 86,
+      // Trading-post purchases are progression actions too: stock the materials
+      // needed for better gear, medicine, and ultimately the ship.
+      'compass': 145, 'scales': 54, 'teeth': 54, 'iron': 64, 'coal': 58,
+      'steel': 72, 'medicine': 28, 'bullets': 24, 'energy cell': 58,
+      'bolas': 45, 'grenade': 52, 'bayonet': 78, 'alien alloy': 125,
+      'bait': 24,
+      'rucksack': 88, 'wagon': 82, 'convoy': 86,
       'cargo drone': 100, 'fluid recycler': 92, 'water tank': 84,
       'cask': 76, 'waterskin': 62,
       'bone spear': 70, 'iron sword': 78, 'steel sword': 84,
@@ -135,11 +141,26 @@
       var onPath = window.Engine && Engine.activeModule === window.Path;
       bonus = onPath ? 48 : 8;
     }
-    if (thing === 'alien alloy') bonus = 98;
-    if (thing === 'steel' && Number(stores.steel) < 20) bonus += 12;
-    if (thing === 'iron' && Number(stores.iron) < 30) bonus += 10;
-    if (thing === 'scales' && Number(stores.scales) < 30) bonus += 8;
-    if (thing === 'teeth' && Number(stores.teeth) < 20) bonus += 6;
+    if (thing === 'alien alloy') bonus = 125;
+    if (thing === 'steel' && Number(stores.steel) < 20) bonus += 14;
+    if (thing === 'iron' && Number(stores.iron) < 30) bonus += 12;
+    if (thing === 'coal' && Number(stores.coal) < 30) bonus += 10;
+    if (thing === 'scales') {
+      var scaleStock = Number(stores.scales) || 0;
+      bonus += scaleStock < 20 ? 24 : (scaleStock < 50 ? 10 : (scaleStock >= 100 ? -24 : 0));
+    }
+    if (thing === 'teeth') {
+      var toothStock = Number(stores.teeth) || 0;
+      bonus += toothStock < 15 ? 24 : (toothStock < 40 ? 10 : (toothStock >= 80 ? -24 : 0));
+    }
+    if (thing === 'bait') {
+      var trapCount = Number(buildings.trap) || 0;
+      var baitStock = Number(stores.bait) || 0;
+      bonus += trapCount > baitStock ? 18 : -18;
+    }
+    if (thing === 'medicine' && Number(stores.medicine) >= 10) bonus -= 24;
+    if (thing === 'bullets' && Number(stores.bullets) >= 40) bonus -= 22;
+    if (thing === 'energy cell' && Number(stores['energy cell']) >= 12) bonus -= 20;
 
     // Reward investments that unlock worker roles, but don't assign jobs before
     // the population and input stock can sustain them.
@@ -173,36 +194,105 @@
   function eventChoiceScore(el, info) {
     var label = norm((el.innerText || el.textContent) + ' ' + el.id);
     var value = 0;
-    // Prefer non-violent, useful outcomes and progress; avoid paying scarce
-    // resources for vague outcomes when a clear reward is available.
+
+    // Favor loot, worthwhile purchases, and useful progression; avoid paying
+    // scarce materials for choices with no meaningful reward.
     if (/take all|take everything|collect all|loot_takeeverything/.test(label)) value += 180;
     if (/leave|return|escape|retreat|run away/.test(label)) value -= 15;
     if (/fight|attack|kill|hunt/.test(label)) value += 12;
     if (/help|save|rescue|free|protect/.test(label)) value += 28;
-    if (/trade|buy|purchase|give|pay|offer/.test(label)) value -= 8;
+    if (/buy|purchase|trade/.test(label)) value += 8;
     if (/steal|rob|threaten|insult|betray/.test(label)) value -= 24;
     if (/ignore|refuse|decline|turn him away/.test(label)) value -= 12;
     if (/spare|help|rescue|give medicine|heal|cure|repair|fix/.test(label)) value += 16;
-    if (/hang him|kill|execute/.test(label)) value -= 16;
+    if (/hang him|execute/.test(label)) value -= 16;
     if (/continue|next|leave cave|go home/.test(label)) value += 5;
+
+    function quantity(key) {
+      if (window.Events && typeof Events.getQuantity === 'function') {
+        return Number(Events.getQuantity(key)) || 0;
+      }
+      if (window.Engine && Engine.activeModule === window.World &&
+          window.Path && Path.outfit) {
+        return Number(Path.outfit[key]) || 0;
+      }
+      var stores = window.$SM && $SM.get ? ($SM.get('stores') || {}) : {};
+      return Number(stores[key]) || 0;
+    }
 
     if (info) {
       var reward = info.reward || {};
       Object.keys(reward).forEach(function (key) {
         var n = Number(reward[key]) || 0;
-        value += n * (/fur|teeth|scale|bait|meat|herb|medicine|medicine|iron|steel|leather|cloth|torch|cured meat|water/.test(key) ? 3 : 1);
+        if (!n) return;
+        var have = quantity(key);
+        var perUnit = 1;
+        switch (key) {
+          case 'compass': perUnit = have > 0 ? -150 : 260; break;
+          case 'alien alloy': perUnit = 170; break;
+          case 'steel': perUnit = have < 20 ? 5 : 1; break;
+          case 'iron': perUnit = have < 30 ? 4 : 1; break;
+          case 'coal': perUnit = have < 30 ? 3.5 : 1; break;
+          case 'scales': perUnit = have < 20 ? 42 : (have < 50 ? 20 : 4); break;
+          case 'teeth': perUnit = have < 15 ? 42 : (have < 40 ? 20 : 4); break;
+          case 'medicine': perUnit = have < 5 ? 16 : (have < 12 ? 8 : 1); break;
+          case 'bullets': perUnit = have < 20 ? 8 : 2; break;
+          case 'energy cell': perUnit = have < 8 ? 18 : 4; break;
+          case 'bait':
+            var buildings = window.$SM && $SM.get ? ($SM.get('game.buildings') || {}) : {};
+            perUnit = (Number(buildings.trap) || 0) > have ? 20 : -8;
+            break;
+          case 'fur': perUnit = have < 300 ? 0.16 : 0.07; break;
+          case 'wood': perUnit = 0.035; break;
+          case 'meat': perUnit = 0.02; break;
+          case 'cured meat': perUnit = 0.2; break;
+          case 'water': perUnit = 0.15; break;
+          default: perUnit = 1.5; break;
+        }
+        value += n * perUnit;
       });
+
       var cost = info.cost || {};
       Object.keys(cost).forEach(function (key) {
         var n = Number(cost[key]) || 0;
-        var available = window.Path && Path.outfit ? Number(Path.outfit[key]) || 0 : 0;
-        value -= n * (available <= n * 2 ? 8 : 2);
+        if (!n) return;
+        var have = quantity(key);
+        if (have < n) {
+          value -= 1000;
+          return;
+        }
+
+        // Cost value is measured in score units, not multiplied by an arbitrary
+        // large penalty. Fur/wood are renewable; expedition supplies and rare
+        // metals are much more expensive to give up.
+        var unitCost = 0.08;
+        switch (key) {
+          case 'fur': unitCost = 0.06; break;
+          case 'wood': unitCost = 0.025; break;
+          case 'meat': unitCost = 0.02; break;
+          case 'cured meat': unitCost = 0.35; break;
+          case 'scales': unitCost = 0.45; break;
+          case 'teeth': unitCost = 0.55; break;
+          case 'iron': unitCost = 0.55; break;
+          case 'coal': unitCost = 0.4; break;
+          case 'steel': unitCost = 0.9; break;
+          case 'medicine': unitCost = 12; break;
+          case 'bullets': unitCost = 0.35; break;
+          case 'energy cell': unitCost = 3; break;
+          case 'alien alloy': unitCost = 20; break;
+          case 'water': unitCost = 0.2; break;
+        }
+        var remaining = have - n;
+        var scarcity = remaining <= n ? 1.8 : (remaining <= n * 2 ? 1.25 : 1);
+        value -= Math.min(180, n * unitCost * scarcity);
       });
+
       if (info.nextScene && info.nextScene !== 'end') value += 4;
       if (info.link) value -= 100;
     }
     return value;
   }
+
 
   function handleEvent() {
     if (!window.Events || typeof Events.activeEvent !== 'function') return false;
