@@ -276,7 +276,7 @@
   function createPanel() {
     var style = el('style');
     style.textContent =
-      '#adrAdminOverlay{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:monospace;color:#ddd}' +
+      '#adrAdminOverlay{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:monospace;color:#ddd}' + '#adrAdminOverlay[hidden]{display:none}' +
       '#adrAdminPanel{width:min(780px,100%);max-height:92vh;overflow:auto;background:#171717;border:1px solid #777;box-shadow:0 12px 50px #000;padding:18px;box-sizing:border-box}' +
       '#adrAdminPanel *{box-sizing:border-box}' +
       '#adrAdminPanel .adr-admin-header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #555;padding-bottom:10px;margin-bottom:12px;gap:12px}' +
