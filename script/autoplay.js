@@ -9,7 +9,7 @@
   function setEnabled(value) {
     enabled = value;
     if (enabled) {
-      if (!timer) timer = window.setInterval(tick, 1200);
+      if (!timer) timer = window.setInterval(tick, 250);
       tick();
     } else if (timer) {
       window.clearInterval(timer);
@@ -87,7 +87,7 @@
   }
 
   function clickReady(el) {
-    if (!ready(el) || Date.now() - lastAction < 900) return false;
+    if (!ready(el) || Date.now() - lastAction < 200) return false;
     el.click();
     lastAction = Date.now();
     return true;
