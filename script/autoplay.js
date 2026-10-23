@@ -74,6 +74,7 @@
     if (el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true') return -100;
     if (el.closest('.menu') || el.closest('#adr-autoplay-status')) return -100;
     if (el.id === 'gatherButton') best = Math.max(best, 110);
+    if (/^(stoke fire|light fire)[.!]?$/.test(text)) return 1000;
     if (/^(stoke fire|gather wood|check traps|embark|return home)[.!]?$/.test(text)) best += 8;
     best += investmentBonus(el);
     return best;
