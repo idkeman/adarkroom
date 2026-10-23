@@ -75,7 +75,8 @@
     return visible(el) && !el.hasAttribute('disabled') &&
       !el.classList.contains('disabled') &&
       !el.classList.contains('onCooldown') &&
-      el.getAttribute('aria-disabled') !== 'true';
+      el.getAttribute('aria-disabled') !== 'true' &&
+      !(window.jQuery && jQuery(el).data('onCooldown'));
   }
 
   function clickReady(el) {
