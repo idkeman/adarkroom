@@ -6,6 +6,7 @@
   var enabled = false;
   var timer = null;
   var lastAction = 0;
+  var lastManualNavigation = 0;
   function setEnabled(value) {
     enabled = value;
     if (enabled) {
@@ -187,6 +188,10 @@
 
 
   function advanceModule() {
+    // Never immediately override the player's own location choice. Autoplay
+    // waits after manual tab navigation, then only advances if the current
+    // location still has no useful action.
+    if (Date.now() - lastManualNavigation < 10000) return false;
     if (!window.Engine || !Engine.activeModule || Engine.activeModule === window.Space) return false;
     var route = [window.Room, window.Outside, window.Path, window.Fabricator, window.Ship];
     var current = route.indexOf(Engine.activeModule);
@@ -270,6 +275,13 @@
       advanceModule();
     }
   }
+
+  // Remember manual location changes so the autoplay loop doesn't snap back
+  // to another tab on its next tick.
+  document.addEventListener('click', function (event) {
+    var tab = event.target && event.target.closest ? event.target.closest('.headerButton') : null;
+    if (tab) lastManualNavigation = Date.now();
+  }, true);
 
   document.addEventListener('keydown', function (event) {
     if (!(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'p') || event.repeat) return;
