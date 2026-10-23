@@ -270,9 +270,9 @@
       // uses the game's own handlers, costs, unlocks and progression rules.
       clickReady(candidates[0].el);
     } else {
-      // If this area has no useful available action, continue the walkthrough
-      // by visiting the next unlocked location instead of stalling.
-      advanceModule();
+      // Stay in the player's chosen location. Autoplay must never navigate
+      // between locations on its own; the player controls tab switching.
+      return;
     }
   }
 
