@@ -75,9 +75,84 @@
     if (el.closest('.menu') || el.closest('#adr-autoplay-status')) return -100;
     if (el.id === 'gatherButton') best = Math.max(best, 110);
     if (/^(stoke fire|gather wood|check traps|embark|return home)[.!]?$/.test(text)) best += 8;
+    best += investmentBonus(el);
     return best;
   }
 
+
+  // Evaluate purchases by their long-run economic and progression value, not
+  // just the wording of the button. These are strategic bonuses layered on
+  // top of the action priorities; native game checks still enforce affordability.
+  function investmentBonus(el) {
+    var id = norm(el.id).replace(/[_-]+/g, ' ');
+    var thing = norm(el.getAttribute('buildThing') || el.getAttribute('fabricateThing') || '');
+    if (!thing) {
+      var match = id.match(/^(?:build|fabricate) (.+)$/);
+      if (match) thing = match[1];
+    }
+    if (!thing) return 0;
+
+    var stores = window.$SM && $SM.get ? ($SM.get('stores') || {}) : {};
+    var buildings = window.$SM && $SM.get ? ($SM.get('game.buildings') || {}) : {};
+    var population = window.$SM && $SM.get ? (Number($SM.get('game.population')) || 0) : 0;
+    var workers = window.$SM && $SM.get ? ($SM.get('game.workers') || {}) : {};
+    var huts = Number(buildings.hut) || 0;
+    var bonus = 0;
+
+    // High-leverage economy engines and unlocks come before marginal upgrades.
+    // A trading post unlocks the buy/sell economy; a cart improves wood
+    // gathering; huts expand population and therefore the workforce.
+    var ranks = {
+      'trading post': 105, 'cart': 95, 'hut': 76, 'lodge': 72,
+      'tannery': 69, 'smokehouse': 68, 'workshop': 65,
+      'steelworks': 62, 'armoury': 59, 'trap': 56,
+      'compass': 110, 'rucksack': 88, 'wagon': 82, 'convoy': 86,
+      'cargo drone': 100, 'fluid recycler': 92, 'water tank': 84,
+      'cask': 76, 'waterskin': 62,
+      'bone spear': 70, 'iron sword': 78, 'steel sword': 84,
+      'rifle': 82, 'energy blade': 90, 'plasma rifle': 96,
+      'kinetic armour': 91, 'disruptor': 88, 'hypo': 85, 'stim': 72,
+      'glowstone': 58, 'l armour': 60, 'i armour': 72, 's armour': 82,
+      'torch': 28
+    };
+    bonus = ranks[thing] || 35;
+
+    // Don't keep expanding housing when there is already ample unused capacity;
+    // do invest in housing when population is near its cap or workers are scarce.
+    if (thing === 'hut') {
+      var capacity = huts * 4;
+      bonus += (population >= capacity - 3 || population < 4) ? 24 : (population < capacity - 8 ? -24 : 0);
+      if (huts >= 8) bonus -= 18;
+    }
+    if (thing === 'trading post' && Number(buildings['trading post']) > 0) return -100;
+    if (thing === 'cart' && Number(stores.cart) > 0) return -100;
+    if (thing === 'compass' && Number(stores.compass) > 0) return -100;
+
+    // Prefer productive infrastructure before buying consumables or duplicate
+    // gear. Weapons/medical supplies get a boost when exploration is underway.
+    if (/^(bullets|medicine|energy cell|bolas|grenade|bayonet)$/.test(thing)) {
+      var onPath = window.Engine && Engine.activeModule === window.Path;
+      bonus = onPath ? 48 : 8;
+    }
+    if (thing === 'alien alloy') bonus = 98;
+    if (thing === 'steel' && Number(stores.steel) < 20) bonus += 12;
+    if (thing === 'iron' && Number(stores.iron) < 30) bonus += 10;
+    if (thing === 'scales' && Number(stores.scales) < 30) bonus += 8;
+    if (thing === 'teeth' && Number(stores.teeth) < 20) bonus += 6;
+
+    // Reward investments that unlock worker roles, but don't assign jobs before
+    // the population and input stock can sustain them.
+    if (thing === 'lodge' && population < 4) bonus -= 18;
+    if (thing === 'tannery' && (Number(stores.fur) || 0) < 20) bonus -= 12;
+    if (thing === 'smokehouse' && (Number(stores.meat) || 0) < 20) bonus -= 12;
+    if (thing === 'steelworks' && ((Number(stores.iron) || 0) < 20 || (Number(stores.coal) || 0) < 20)) bonus -= 12;
+    if (thing === 'armoury' && ((Number(stores.steel) || 0) < 20 || (Number(stores.sulphur) || 0) < 10)) bonus -= 12;
+
+    // Existing productive jobs are valuable only when their input resources
+    // and population can support them; manageWorkers handles the actual split.
+    if (thing === 'hut' && population > 0 && (Number(workers.gatherer) || 0) < 1) bonus += 8;
+    return bonus;
+  }
 
   function ready(el) {
     return visible(el) && !el.hasAttribute('disabled') &&
