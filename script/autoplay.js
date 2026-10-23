@@ -41,17 +41,24 @@
   // settlement, unlock production and equipment, then use expedition/ship
   // controls as they become available. Cooldowns and affordability stay native.
   var priorities = [
-    ['stoke fire', 120], ['add fuel', 115], ['gather wood', 110],
-    ['check traps', 108], ['collect', 95], ['return home', 94],
-    ['return to village', 94], ['embark', 92], ['explore', 90],
-    ['build hut', 88], ['build cart', 86], ['build trap', 84],
-    ['build lodge', 82], ['build trading post', 80], ['build workshop', 78],
-    ['build tannery', 76], ['build smokehouse', 75], ['build steelworks', 74],
-    ['build armoury', 73], ['craft', 70], ['make', 65],
-    ['upgrade', 62], ['train', 60], ['hire', 58],
-    ['gather', 55], ['hunt', 52], ['scavenge', 50],
-    ['attack', 48], ['fight', 47], ['continue', 45], ['next', 42],
-    ['trade', 38], ['buy', 35], ['sell', 30], ['leave', 20]
+    // Keep the survival loop stable before spending resources on expansion.
+    ['light fire', 132], ['stoke fire', 130], ['add fuel', 125],
+    ['gather wood', 120], ['check traps', 118], ['collect all', 115],
+    ['take everything', 114], ['take all', 113], ['collect', 108],
+    // Main progression: settlement, expedition, ship and endgame.
+    ['return home', 106], ['return to village', 106], ['embark', 104],
+    ['explore', 102], ['reinforce hull', 100], ['upgrade engine', 99],
+    ['lift off', 98], ['power cycle', 97], ['wait', 94],
+    ['build hut', 92], ['build cart', 90], ['build trap', 88],
+    ['build lodge', 86], ['build trading post', 84], ['build workshop', 82],
+    ['build tannery', 80], ['build smokehouse', 79], ['build steelworks', 78],
+    ['build armoury', 77], ['fabricate', 76], ['craft', 74], ['make', 72],
+    ['upgrade', 70], ['repair', 69], ['reinforce', 68], ['train', 66],
+    ['hire', 64], ['gather', 62], ['hunt', 60], ['scavenge', 58],
+    ['go inside', 56], ['enter', 55], ['investigate', 54], ['continue', 53],
+    ['next', 52], ['open', 50], ['attack', 48], ['fight', 47],
+    ['trade', 42], ['buy', 40], ['sell', 38], ['say goodbye', 35],
+    ['leave cave', 34], ['leave', 30], ['go home', 28], ['linger', 20]
   ];
 
   function score(el) {
@@ -96,9 +103,11 @@
     if (/fight|attack|kill|hunt/.test(label)) value += 12;
     if (/help|save|rescue|free|protect/.test(label)) value += 28;
     if (/trade|buy|purchase|give|pay|offer/.test(label)) value -= 8;
-    if (/steal|rob|threaten|insult|betray/.test(label)) value -= 18;
-    if (/ignore|refuse|decline/.test(label)) value -= 10;
-    if (/continue|next/.test(label)) value += 5;
+    if (/steal|rob|threaten|insult|betray/.test(label)) value -= 24;
+    if (/ignore|refuse|decline|turn him away/.test(label)) value -= 12;
+    if (/spare|help|rescue|give medicine|heal|cure|repair|fix/.test(label)) value += 16;
+    if (/hang him|kill|execute/.test(label)) value -= 16;
+    if (/continue|next|leave cave|go home/.test(label)) value += 5;
 
     if (info) {
       var reward = info.reward || {};
@@ -182,11 +191,13 @@
     if (handleEvent()) return;
     // Prefer buttons in the current view; the game's own disabled state
     // prevents spending resources that are unavailable.
-    var candidates = Array.prototype.slice.call(document.querySelectorAll(
+    var activeRoot = window.Engine && Engine.activeModule && Engine.activeModule.panel;
+    var root = activeRoot && activeRoot.length && activeRoot[0].contains(document.activeElement)
+      ? activeRoot[0] : (activeRoot && activeRoot.length && visible(activeRoot[0]) ? activeRoot[0] : document);
+    var candidates = Array.prototype.slice.call(root.querySelectorAll(
       '.button, button, a.button, [role="button"]'
     )).filter(function (el) {
-      return visible(el) && !el.classList.contains('disabled') &&
-        !el.hasAttribute('disabled') && !el.closest('.menu');
+      return ready(el) && !el.closest('.menu') && !el.closest('#event');
     }).map(function (el) {
       return { el: el, score: score(el) };
     }).filter(function (item) { return item.score > 0; });
@@ -196,13 +207,9 @@
     });
 
     if (candidates.length) {
-      var chosen = candidates[0].el;
-      // Keep a human-like cadence rather than firing every available action
-      // in one frame. Native cooldowns handle the actual game timing.
-      if (Date.now() - lastAction >= 1000) {
-        chosen.click();
-        lastAction = Date.now();
-      }
+      // Avoid blindly repeating a disabled/cooling-down action; each click
+      // uses the game's own handlers, costs, unlocks and progression rules.
+      clickReady(candidates[0].el);
     }
   }
 
