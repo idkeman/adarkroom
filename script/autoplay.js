@@ -299,21 +299,29 @@
 
   function combatMaterialUrgency(resource) {
     var plan = combatWeaponPlan();
-    if (!plan || !plan.best) return 0;
+    if (!plan || !plan.candidates.length) return 0;
     var stores = combatInventory();
-    var candidates = plan.candidates;
-    var best = plan.best;
-    // Only buy materials toward a stronger weapon if the best attainable
-    // upgrade is currently blocked by that ingredient. Do not blindly stockpile.
+    var baseline = 0;
+    plan.candidates.forEach(function(candidate) {
+      if (candidate.inventory > 0 && candidate.ammoAvailable) baseline = Math.max(baseline, candidate.score);
+    });
     var bonus = 0;
-    candidates.forEach(function(candidate) {
+    plan.candidates.forEach(function(candidate) {
       if (!candidate.craft || candidate.inventory > 0 || !candidate.missing) return;
-      if (candidate.score < best.score + 0.8) return;
+      // Only buy materials for a weapon that improves on what can be used now.
+      if (candidate.score < baseline + 0.65) return;
       var gap = Math.max(0, (Number(candidate.cost[resource]) || 0) - (Number(stores[resource]) || 0));
       if (gap <= 0) return;
-      var value = Math.max(0, candidate.score - best.score + 1);
-      bonus = Math.max(bonus, Math.min(32, value * 7 + Math.min(10, gap * 0.1)));
+      var improvement = candidate.score - baseline;
+      bonus = Math.max(bonus, Math.min(36, improvement * 8 + Math.min(12, gap * 0.12)));
     });
+    // Replenish the ammunition of the current best weapon only when stock is low.
+    var best = plan.candidates[0];
+    var ammoCost = best && best.weapon ? (best.weapon.cost || {}) : {};
+    if (best && best.inventory > 0 && Object.prototype.hasOwnProperty.call(ammoCost, resource)) {
+      var have = Number(stores[resource]) || 0;
+      if (have < 6) bonus = Math.max(bonus, 14 + (6 - have) * 2);
+    }
     return bonus;
   }
 
