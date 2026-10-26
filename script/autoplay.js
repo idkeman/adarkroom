@@ -483,8 +483,8 @@
           if (aEnough !== bEnough) return aEnough ? -1 : 1;
           var aWaste = Math.max(0, healAmount(a.id) - missing);
           var bWaste = Math.max(0, healAmount(b.id) - missing);
-          var aValue = healingCost(a.id) + aWaste * 0.2;
-          var bValue = healingCost(b.id) + bWaste * 0.2;
+          var aValue = healingCost(a.id) + aWaste * 0.2 - learnedActionBonus(aiContext, norm(a.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48));
+          var bValue = healingCost(b.id) + bWaste * 0.2 - learnedActionBonus(aiContext, norm(b.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48));
           if (aEnough && bEnough) return aValue - bValue;
           return bHeal - aHeal || aValue - bValue;
         });
@@ -498,7 +498,8 @@
       // enemy when available, but do not waste turns against harmless foes.
       var shield = panel.querySelector('#buttons #shld');
       if (shield && ready(shield) && threat >= 5 && hpRatio <= 0.8 &&
-          (window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status')) !== 'shield') {
+          (window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status')) !== 'shield' &&
+          learnedActionBonus(aiContext, norm(shield.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48)) > -2.5) {
         recordCombatChoice(shield, aiContext);
         return clickReady(shield);
       }
