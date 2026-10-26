@@ -75,7 +75,8 @@
       debug: false,
       log: false,
       dropbox: false,
-      doubleTime: false
+      doubleTime: false,
+      timeMultiplier: 1
     },
 
     init: function(options) {
@@ -103,6 +104,18 @@
       } else {
         Engine.loadGame();
       }
+
+      // Restore speed before gameplay timers are scheduled. Legacy Hyper saves map to 2x.
+      var savedMultiplier = $SM.get('config.timeMultiplier');
+      if (savedMultiplier !== undefined && isFinite(Number(savedMultiplier)) &&
+          Number(savedMultiplier) >= 1 && Number(savedMultiplier) <= 5) {
+        this.options.timeMultiplier = Math.floor(Number(savedMultiplier));
+      } else if ($SM.get('config.hyperMode', true) || this.options.doubleTime) {
+        this.options.timeMultiplier = 2;
+      } else {
+        this.options.timeMultiplier = 1;
+      }
+      this.options.doubleTime = this.options.timeMultiplier > 1;
 
       // start loading music and events early
       for (var key in AudioLibrary) {
@@ -162,8 +175,8 @@
 
       $('<span>')
         .addClass('hyper menuBtn')
-        .text(_('hyper.'))
-        .click(Engine.confirmHyperMode)
+        .text(Engine.speedLabel())
+        .click(Engine.openSpeedMenu)
         .appendTo(menu);
 
       $('<span>')
@@ -238,9 +251,8 @@
         Engine.turnLightsOff();
       }
 
-      if($SM.get('config.hyperMode', true)){
-        Engine.triggerHyperMode();
-      }
+      // The multiplier was restored before Room/Outside timers were initialized.
+      Engine.updateSpeedLabel();
 
       Engine.toggleVolume(Boolean($SM.get('config.soundOn')));
       if(!AudioEngine.isAudioContextRunning()){
@@ -552,40 +564,56 @@
       }
     },
 
-    confirmHyperMode: function(){
-      if (!Engine.options.doubleTime) {
-        Events.startEvent({
-          title: _('Go Hyper?'),
-          scenes: {
-            start: {
-              text: [_('turning hyper mode speeds up the game to x2 speed. do you want to do that?')],
-              buttons: {
-                'yes': {
-                  text: _('yes'),
-                  nextScene: 'end',
-                  onChoose: Engine.triggerHyperMode
-                },
-                'no': {
-                  text: _('no'),
-                  nextScene: 'end'
-                }
-              }
+    speedLabel: function() {
+      var multiplier = Number(Engine.options.timeMultiplier) || (Engine.options.doubleTime ? 2 : 1);
+      return 'speed: x' + multiplier + '.';
+    },
+
+    updateSpeedLabel: function() {
+      $('.hyper').text(Engine.speedLabel());
+    },
+
+    openSpeedMenu: function() {
+      if (!window.Events || typeof Events.startEvent !== 'function') return;
+      var current = Number(Engine.options.timeMultiplier) || 1;
+      Events.startEvent({
+        title: 'Game Speed',
+        scenes: {
+          start: {
+            text: ['Choose the game speed. Higher speeds shorten the same internal timers used by Hyper mode. Current speed: x' + current + '.'],
+            buttons: {
+              'speedClassic': { text: 'x1 - classic', nextScene: 'end', onChoose: function() { Engine.setTimeMultiplier(1); } },
+              'speedHyper': { text: 'x2 - hyper', nextScene: 'end', onChoose: function() { Engine.setTimeMultiplier(2); } },
+              'speedTriple': { text: 'x3 speed', nextScene: 'end', onChoose: function() { Engine.setTimeMultiplier(3); } },
+              'speedQuadruple': { text: 'x4 speed', nextScene: 'end', onChoose: function() { Engine.setTimeMultiplier(4); } },
+              'speedQuintuple': { text: 'x5 speed', nextScene: 'end', onChoose: function() { Engine.setTimeMultiplier(5); } }
             }
           }
-        });
-      } else {
-        Engine.triggerHyperMode();
+        }
+      });
+    },
+
+    setTimeMultiplier: function(multiplier) {
+      multiplier = Number(multiplier);
+      if (!isFinite(multiplier)) multiplier = 1;
+      multiplier = Math.max(1, Math.min(5, Math.floor(multiplier)));
+      Engine.options.timeMultiplier = multiplier;
+      Engine.options.doubleTime = multiplier > 1;
+      if (window.$SM && typeof $SM.set === 'function') {
+        // Keep the legacy flag in sync; the multiplier write saves both values.
+        $SM.set('config.hyperMode', multiplier === 2, true);
+        $SM.set('config.timeMultiplier', multiplier, false);
       }
+      Engine.updateSpeedLabel();
+      Engine.log('Game speed set to x' + multiplier);
+    },
+
+    confirmHyperMode: function() {
+      Engine.openSpeedMenu();
     },
 
     triggerHyperMode: function() {
-      Engine.options.doubleTime = !Engine.options.doubleTime;
-      if(Engine.options.doubleTime)
-        $('.hyper').text(_('classic.'));
-      else
-        $('.hyper').text(_('hyper.'));
-
-      $SM.set('config.hyperMode', Engine.options.doubleTime, false);
+      Engine.setTimeMultiplier(Engine.options.timeMultiplier > 1 ? 1 : 2);
     },
 
     // Gets a guid
@@ -832,24 +860,23 @@
     },
 
     setInterval: function(callback, interval, skipDouble){
-      if( Engine.options.doubleTime && !skipDouble ){
-        Engine.log('Double time, cutting interval in half');
-        interval /= 2;
+      var multiplier = skipDouble ? 1 :
+        (Number(Engine.options.timeMultiplier) || (Engine.options.doubleTime ? 2 : 1));
+      if (multiplier > 1 && !skipDouble) {
+        Engine.log('Speed x' + multiplier + ', scaling interval');
+        interval /= multiplier;
       }
-
       return setInterval(callback, interval);
-
     },
 
     setTimeout: function(callback, timeout, skipDouble){
-
-      if( Engine.options.doubleTime && !skipDouble ){
-        Engine.log('Double time, cutting timeout in half');
-        timeout /= 2;
+      var multiplier = skipDouble ? 1 :
+        (Number(Engine.options.timeMultiplier) || (Engine.options.doubleTime ? 2 : 1));
+      if (multiplier > 1 && !skipDouble) {
+        Engine.log('Speed x' + multiplier + ', scaling timeout');
+        timeout /= multiplier;
       }
-
       return setTimeout(callback, timeout);
-
     }
   };
 
