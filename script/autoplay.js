@@ -304,33 +304,135 @@
     var lootAll = panel.querySelector('#loot_takeEverything');
     if (lootAll && ready(lootAll)) return clickReady(lootAll);
 
-    // Combat: heal only when needed, then use the strongest affordable
-    // attack that is off cooldown. Native combat logic still controls damage.
+    // Combat priority is state-aware: preserve rare healing supplies, prefer
+    // attacks by expected useful damage per cooldown, and use stun against a
+    // dangerous enemy rather than treating the string "stun" as numeric damage.
     if (enemy && visible(enemy)) {
       var player = panel.querySelector('#wanderer');
-      var hp = player && Number(window.jQuery ? jQuery(player).data('hp') : player.getAttribute('data-hp'));
-      var maxHp = window.World && typeof World.getMaxHealth === 'function' ? World.getMaxHealth() : 0;
-      if (hp > 0 && maxHp > 0 && hp / maxHp <= 0.38) {
-        var heal = Array.prototype.slice.call(panel.querySelectorAll('#healButtons .button, #buttons #eat, #buttons #meds, #buttons #hypo'))
-          .filter(ready)
-          .sort(function(a,b) {
-            var rank = function(el) { return el.id === 'hypo' ? 3 : el.id === 'meds' ? 2 : el.id === 'eat' ? 1 : 0; };
-            return rank(b) - rank(a);
-          })[0];
-        if (heal) return clickReady(heal);
+      var enemyHp = Number(window.jQuery ? jQuery(enemy).data('hp') : enemy.getAttribute('data-hp')) || 0;
+      var enemyMaxHp = Number(window.jQuery ? jQuery(enemy).data('maxHp') : enemy.getAttribute('data-max-hp')) || enemyHp;
+      var hp = Number(player && (window.jQuery ? jQuery(player).data('hp') : player.getAttribute('data-hp'))) || 0;
+      var maxHp = window.World && typeof World.getMaxHealth === 'function' ? World.getMaxHealth() : hp;
+      var hpRatio = maxHp > 0 ? hp / maxHp : 1;
+      var enemyStatus = window.jQuery ? jQuery(enemy).data('status') : enemy.getAttribute('data-status');
+      var enemyStunned = Boolean(window.jQuery ? jQuery(enemy).data('stunned') : enemy.getAttribute('data-stunned') === 'true');
+      var scene = window.Events && Events.activeEvent() && Events.activeEvent().scenes
+        ? Events.activeEvent().scenes[Events.activeScene] : null;
+      var enemyDamage = Math.max(0, Number(scene && scene.damage) || 0);
+      var enemyDelay = Math.max(0.5, Number(scene && scene.attackDelay) || 2);
+      var threat = enemyDamage / enemyDelay;
+
+      function healAmount(id) {
+        if (id === 'eat') return window.World && typeof World.meatHeal === 'function' ? World.meatHeal() : 4;
+        if (id === 'meds') return window.World && typeof World.medsHeal === 'function' ? World.medsHeal() : 10;
+        if (id === 'hypo') return window.World && typeof World.hypoHeal === 'function' ? World.hypoHeal() : 25;
+        return 0;
       }
-      var attacks = Array.prototype.slice.call(panel.querySelectorAll('#attackButtons .button, .weaponButton, #attack_fists')).filter(ready);
-      attacks.sort(function(a,b) {
+      function healingCost(id) {
+        // Meat is replenishable; medicine and especially hypos are much rarer.
+        if (id === 'eat') return 1;
+        if (id === 'meds') return 4;
+        if (id === 'hypo') return 9;
+        return 99;
+      }
+
+      var healButtons = Array.prototype.slice.call(panel.querySelectorAll(
+        '#healButtons .button, #buttons #eat, #buttons #meds, #buttons #hypo'
+      )).filter(ready).filter(function(el) {
+        return hp < maxHp && healAmount(el.id) > 0;
+      });
+      var incomingRisk = threat >= 5 || hpRatio <= 0.25;
+      var healThreshold = threat >= 7 ? 0.58 : threat >= 4 ? 0.42 : 0.30;
+      if (hpRatio <= healThreshold || incomingRisk) {
+        healButtons.sort(function(a, b) {
+          var missing = maxHp - hp;
+          var aHeal = Math.min(missing, healAmount(a.id));
+          var bHeal = Math.min(missing, healAmount(b.id));
+          // Choose the lowest-value resource that provides enough healing to
+          // survive at least one likely hit; otherwise maximize useful healing.
+          var required = Math.min(missing, Math.max(enemyDamage + 1, maxHp * 0.22));
+          var aEnough = aHeal >= required, bEnough = bHeal >= required;
+          if (aEnough !== bEnough) return aEnough ? -1 : 1;
+          var aWaste = Math.max(0, healAmount(a.id) - missing);
+          var bWaste = Math.max(0, healAmount(b.id) - missing);
+          var aValue = healingCost(a.id) + aWaste * 0.2;
+          var bValue = healingCost(b.id) + bWaste * 0.2;
+          if (aEnough && bEnough) return aValue - bValue;
+          return bHeal - aHeal || aValue - bValue;
+        });
+        if (healButtons.length) return clickReady(healButtons[0]);
+      }
+
+      // A shield prevents the next incoming hit. Use it against a high-damage
+      // enemy when available, but do not waste turns against harmless foes.
+      var shield = panel.querySelector('#buttons #shld');
+      if (shield && ready(shield) && threat >= 5 && hpRatio <= 0.8 &&
+          (window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status')) !== 'shield') {
+        return clickReady(shield);
+      }
+
+      var attacks = Array.prototype.slice.call(panel.querySelectorAll(
+        '#attackButtons .button, .weaponButton, #attack_fists, #buttons #attack-disruptor, #buttons #attack-bolas'
+      )).filter(ready);
+      attacks.sort(function(a, b) {
         function attackValue(el) {
           var name = el.id.replace(/^attack_/, '').replace(/-/g, ' ');
           var weapon = window.World && World.Weapons && World.Weapons[name];
-          if (!weapon) return el.id === 'attack_fists' ? 1 : 0;
+          if (!weapon) return el.id === 'attack_fists' ? 0.5 : -100;
+
+          var damage = weapon.damage;
+          var cooldown = Math.max(0.5, Number(weapon.cooldown) || 1);
           var cost = weapon.cost || {};
-          var scarcity = Object.keys(cost).reduce(function(sum,key) {
-            var have = window.Path && Path.outfit ? Number(Path.outfit[key]) || 0 : 0;
-            return sum + (have <= (Number(cost[key]) || 0) * 2 ? 8 : 0);
-          },0);
-          return (Number(weapon.damage) || 0) / Math.max(Number(weapon.cooldown) || 1, 1) - scarcity;
+          var outfit = window.Path && Path.outfit ? Path.outfit : {};
+          var playerStatus = window.jQuery ? jQuery(player).data('status') : player.getAttribute('data-status');
+          var score = 0;
+
+          if (damage === 'stun') {
+            // Stun is control, not damage: valuable against a live dangerous
+            // enemy, nearly worthless if it is already stunned or almost dead.
+            score = enemyStunned || enemyHp <= 0 ? -5 : (threat * 2.8 + enemyDamage * 0.65);
+            if (enemyStatus === 'shield') score += 12;
+            if (enemyMaxHp > 0 && enemyHp / enemyMaxHp < 0.18) score -= 8;
+          } else {
+            var baseDamage = Math.max(0, Number(damage) || 0);
+            if (weapon.type === 'unarmed' && window.$SM && $SM.hasPerk) {
+              if ($SM.hasPerk('boxer')) baseDamage *= 2;
+              if ($SM.hasPerk('martial artist')) baseDamage *= 3;
+              if ($SM.hasPerk('unarmed master')) baseDamage *= 2;
+            }
+            if (weapon.type === 'melee' && window.$SM && $SM.hasPerk && $SM.hasPerk('barbarian')) {
+              baseDamage = Math.floor(baseDamage * 1.5);
+            }
+            var hitChance = window.World && typeof World.getHitChance === 'function' ? World.getHitChance() : 0.8;
+            var usefulDamage = Math.min(enemyHp || baseDamage, baseDamage) * hitChance;
+            // Killing this enemy immediately is worth more than conserving ammo.
+            var killBonus = baseDamage >= enemyHp && enemyHp > 0 ? 5 : 0;
+            score = usefulDamage / cooldown + killBonus;
+
+            if (playerStatus === 'boost' || playerStatus === 'energised' || playerStatus === 'venomous') {
+              score *= 1.65;
+            }
+            if (enemyStatus === 'shield') score -= usefulDamage / cooldown * 2 + 3;
+          }
+
+          Object.keys(cost).forEach(function(resource) {
+            var price = Math.max(0, Number(cost[resource]) || 0);
+            var have = Math.max(0, Number(outfit[resource]) || 0);
+            var remaining = have - price;
+            var penalty = 0;
+            if (remaining <= 0) penalty = 1.8;
+            else if (remaining <= price * 2) penalty = 0.9;
+            else if (remaining <= price * 4) penalty = 0.35;
+            // Spending the last scarce consumable should require a meaningful
+            // tactical advantage; it should not make an otherwise strong weapon
+            // unusable when that attack can end a dangerous fight.
+            score -= penalty;
+          });
+
+          if (name === 'fists' && window.$SM && $SM.hasPerk && $SM.hasPerk('unarmed master')) {
+            score += 0.8;
+          }
+          return score;
         }
         return attackValue(b) - attackValue(a);
       });
