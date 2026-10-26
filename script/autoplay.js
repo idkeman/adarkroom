@@ -408,10 +408,481 @@
     return false;
   }
 
+  // Journey automation. It runs only on the Path/World screens, preserving
+  // manual control over the game's other location tabs.
+  var activeJourney = null;
+  var lastObservedModule = null;
+  var journeyDirections = [
+    { x: 1, y: 0 }, { x: 0, y: -1 }, { x: -1, y: 0 }, { x: 0, y: 1 }
+  ];
+
+  function storeCount(name) {
+    if (!window.$SM || typeof $SM.get !== 'function') return 0;
+    return Math.max(0, Number($SM.get('stores["' + name + '"]', true)) || 0);
+  }
+
+  function journeyStores() {
+    return window.$SM && $SM.get ? ($SM.get('stores') || {}) : {};
+  }
+
+  function tileTextAt(x, y) {
+    if (!window.World || !World.state || !World.state.map ||
+        !World.state.map[x] || typeof World.state.map[x][y] === 'undefined') return '';
+    return String(World.state.map[x][y] || '');
+  }
+
+  function baseTileAt(x, y) {
+    return tileTextAt(x, y).charAt(0);
+  }
+
+  function journeyKey(x, y) {
+    return x + ',' + y;
+  }
+
+  function visitedJourneyLandmarks() {
+    return window.$SM && $SM.get ? ($SM.get('config.autoplayVisitedLandmarks') || {}) : {};
+  }
+
+  function isJourneyLandmarkVisited(x, y) {
+    return Boolean(visitedJourneyLandmarks()[journeyKey(x, y)]);
+  }
+
+  function markCurrentJourneyLandmark() {
+    if (!window.World || !World.state || !World.curPos || !window.$SM) return;
+    var x = World.curPos[0], y = World.curPos[1];
+    var tileText = tileTextAt(x, y), tile = tileText.charAt(0);
+    if (!tile || tileText.indexOf('!') >= 0 || tile === World.TILE.VILLAGE ||
+        !World.LANDMARKS || !World.LANDMARKS[tile]) return;
+
+    var visited = visitedJourneyLandmarks(), key = journeyKey(x, y);
+    if (visited[key]) return;
+    var next = {};
+    Object.keys(visited).forEach(function (oldKey) { next[oldKey] = visited[oldKey]; });
+    next[key] = true;
+    $SM.set('config.autoplayVisitedLandmarks', next, false);
+  }
+
+  function journeyHazardLimit() {
+    if (storeCount('s armour') > 0 || storeCount('kinetic armour') > 0) return 29;
+    if (storeCount('i armour') > 0) return 17;
+    return 7;
+  }
+
+  function journeyRangeFromWater() {
+    var water = window.World && typeof World.getMaxWater === 'function'
+      ? Math.max(0, Number(World.getMaxWater()) || 0) : 10;
+    return Math.max(1, Math.min(journeyHazardLimit(), Math.floor(Math.max(0, water - 2) / 2) || 1));
+  }
+
+  function outfitWeight(items) {
+    var sum = 0;
+    Object.keys(items || {}).forEach(function (name) {
+      var count = Number(items[name]) || 0;
+      if (count > 0 && window.Path && typeof Path.getWeight === 'function') {
+        sum += count * Path.getWeight(name);
+      }
+    });
+    return sum;
+  }
+
+  function managedJourneyItems() {
+    var names = [
+      'cured meat', 'medicine', 'bullets', 'energy cell', 'grenade', 'bolas',
+      'laser rifle', 'bayonet', 'charm', 'torch', 'glowstone', 'hypo', 'stim',
+      'kinetic armour', 'alien alloy'
+    ];
+    if (window.World && World.Weapons) {
+      Object.keys(World.Weapons).forEach(function (name) {
+        if (names.indexOf(name) < 0) names.push(name);
+      });
+    }
+    if (window.Room && Room.Craftables) {
+      Object.keys(Room.Craftables).forEach(function (name) {
+        var item = Room.Craftables[name];
+        if (item && item.type !== 'building' && names.indexOf(name) < 0) names.push(name);
+      });
+    }
+    if (window.Fabricator && Fabricator.Craftables) {
+      Object.keys(Fabricator.Craftables).forEach(function (name) {
+        if (names.indexOf(name) < 0) names.push(name);
+      });
+    }
+    if (window.Room && Room.MiscItems) {
+      Object.keys(Room.MiscItems).forEach(function (name) {
+        if (names.indexOf(name) < 0) names.push(name);
+      });
+    }
+    return names;
+  }
+
+  function chooseJourneyWeapon(capacity) {
+    if (!window.World || !World.Weapons || !window.Path) return null;
+    var stores = journeyStores(), options = [];
+    Object.keys(World.Weapons).forEach(function (name) {
+      var weapon = World.Weapons[name];
+      if (!weapon || name === 'fists' || typeof weapon.damage !== 'number' ||
+          weapon.damage <= 0 || (Number(stores[name]) || 0) < 1) return;
+      var weight = Path.getWeight(name);
+      if (weight >= capacity) return;
+
+      var ammo = {}, ammoWeight = 0, canUse = true;
+      Object.keys(weapon.cost || {}).forEach(function (resource) {
+        var available = Math.floor(Number(stores[resource]) || 0);
+        if (available < 1) {
+          canUse = false;
+          return;
+        }
+        var desired = Math.min(4, available);
+        ammo[resource] = desired;
+        ammoWeight += desired * Path.getWeight(resource);
+      });
+      if (!canUse || weight + ammoWeight >= capacity) return;
+
+      var scoreValue = weapon.damage / Math.max(1, Number(weapon.cooldown) || 1);
+      if (!Object.keys(weapon.cost || {}).length) scoreValue += 0.35;
+      scoreValue -= weight * 0.04;
+      scoreValue -= Object.keys(ammo).length * 0.1;
+      options.push({ name: name, score: scoreValue, weight: weight, ammo: ammo });
+    });
+    options.sort(function (a, b) { return b.score - a.score; });
+    return options.length ? options[0] : null;
+  }
+
+  function setJourneyOutfit(outfit) {
+    Path.outfit = outfit;
+    $SM.set('outfit', outfit, false);
+    if (typeof Path.updateOutfitting === 'function') Path.updateOutfitting();
+  }
+
+  function prepareJourneySupplies() {
+    if (!window.Path || !window.World || !window.$SM ||
+        typeof Path.getCapacity !== 'function') return false;
+
+    var stores = journeyStores();
+    var capacity = Math.max(1, Number(Path.getCapacity()) || 10);
+    var availableFood = Math.floor(Number(stores['cured meat']) || 0);
+    if (availableFood < 1) return false;
+
+    // Preserve unknown carried contents, but rebuild normal equipment counts
+    // from the inventory actually available at home.
+    var outfit = {};
+    Object.keys(Path.outfit || {}).forEach(function (name) { outfit[name] = Path.outfit[name]; });
+    managedJourneyItems().forEach(function (name) { outfit[name] = 0; });
+
+    var weapon = chooseJourneyWeapon(capacity);
+    if (weapon) {
+      if (Object.keys(weapon.ammo).some(function (name) { return name === weapon.name; })) {
+        outfit[weapon.name] = Math.min(Number(stores[weapon.name]) || 0, weapon.ammo[weapon.name]);
+      } else {
+        outfit[weapon.name] = 1;
+        Object.keys(weapon.ammo).forEach(function (name) {
+          outfit[name] = Math.min(Number(stores[name]) || 0, weapon.ammo[name]);
+        });
+      }
+    }
+
+    var foodMoves = Math.max(1, Number(World.MOVES_PER_FOOD) || 2);
+    if ($SM.hasPerk && $SM.hasPerk('slow metabolism')) foodMoves *= 2;
+    var safeRange = journeyRangeFromWater();
+    var foodTarget = Math.max(1, Math.ceil((safeRange * 2 - 1) / foodMoves));
+    var roomForFood = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
+    var food = Math.min(availableFood, foodTarget, roomForFood);
+
+    if (food < 1) {
+      // If the current weapon leaves no room for food, sacrifice it for the trip.
+      managedJourneyItems().forEach(function (name) { outfit[name] = 0; });
+      roomForFood = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
+      food = Math.min(availableFood, roomForFood);
+    }
+    if (food < 1) return false;
+    outfit['cured meat'] = food;
+
+    function addOptional(name, wanted) {
+      var available = Math.floor(Number(stores[name]) || 0);
+      var existing = Number(outfit[name]) || 0;
+      var room = capacity - outfitWeight(outfit);
+      var spaceCount = Math.max(0, Math.floor(room / Path.getWeight(name)));
+      var add = Math.min(Math.max(0, wanted - existing), Math.max(0, available - existing), spaceCount);
+      if (add > 0) outfit[name] = existing + add;
+    }
+
+    // Add equipment for survival and landmarks only when space remains.
+    addOptional('medicine', 1);
+    addOptional('hypo', 1);
+    addOptional('glowstone', 1);
+    if (!(Number(outfit.glowstone) > 0)) addOptional('torch', 1);
+    addOptional('charm', 1);
+    addOptional('stim', 1);
+
+    // Food remains the final priority; fill any leftover bag capacity with it.
+    var spareRoom = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
+    var spareFood = Math.min(Math.max(0, availableFood - food), spareRoom);
+    if (spareFood > 0) outfit['cured meat'] += spareFood;
+
+    if (outfitWeight(outfit) > capacity + 0.001 || !(Number(outfit['cured meat']) > 0)) return false;
+    setJourneyOutfit(outfit);
+    return true;
+  }
+
+  function journeyPositionIs(x, y) {
+    return Boolean(window.World && World.curPos &&
+      World.curPos[0] === x && World.curPos[1] === y);
+  }
+
+  function routeTileBlocked(x, y, start, target) {
+    if ((x === start[0] && y === start[1]) || (x === target[0] && y === target[1])) return false;
+    var text = tileTextAt(x, y), tile = text.charAt(0);
+    if (!tile || text.indexOf('!') >= 0 || tile === World.TILE.OUTPOST) return false;
+    return Boolean(World.LANDMARKS && World.LANDMARKS[tile] && isJourneyLandmarkVisited(x, y));
+  }
+
+  function buildJourneyRoute(targetX, targetY) {
+    if (!window.World || !World.curPos || !World.state || !World.state.map) return [];
+    var start = [World.curPos[0], World.curPos[1]];
+    var target = [targetX, targetY];
+    if (start[0] === targetX && start[1] === targetY) return [];
+
+    var edge = World.RADIUS * 2;
+    var queue = [start], parent = {};
+    var startKey = journeyKey(start[0], start[1]);
+    var targetKey = journeyKey(targetX, targetY);
+    var found = false;
+    parent[startKey] = null;
+    var directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+    for (var head = 0; head < queue.length; head++) {
+      var position = queue[head];
+      for (var i = 0; i < directions.length; i++) {
+        var nx = position[0] + directions[i][0];
+        var ny = position[1] + directions[i][1];
+        if (nx < 0 || ny < 0 || nx > edge || ny > edge) continue;
+        var key = journeyKey(nx, ny);
+        if (Object.prototype.hasOwnProperty.call(parent, key)) continue;
+        if (routeTileBlocked(nx, ny, start, target)) continue;
+        parent[key] = journeyKey(position[0], position[1]);
+        if (key === targetKey) {
+          found = true;
+          break;
+        }
+        queue.push([nx, ny]);
+      }
+      if (found) break;
+    }
+    if (!found) return [];
+
+    var route = [], cursor = targetKey;
+    while (cursor !== startKey) {
+      var parts = cursor.split(',');
+      route.push([Number(parts[0]), Number(parts[1])]);
+      cursor = parent[cursor];
+      if (cursor == null) return [];
+    }
+    route.reverse();
+    return route;
+  }
+
+  function journeyLandmarkPriority(tile) {
+    var rank = {};
+    rank[World.TILE.SHIP] = 150;
+    rank[World.TILE.IRON_MINE] = 125;
+    rank[World.TILE.COAL_MINE] = 115;
+    rank[World.TILE.SULPHUR_MINE] = 105;
+    rank[World.TILE.CACHE] = 120;
+    rank[World.TILE.BOREHOLE] = 95;
+    rank[World.TILE.CAVE] = 85;
+    rank[World.TILE.SWAMP] = 82;
+    rank[World.TILE.BATTLEFIELD] = 80;
+    rank[World.TILE.TOWN] = 75;
+    rank[World.TILE.CITY] = 70;
+    rank[World.TILE.HOUSE] = 72;
+    rank[World.TILE.OUTPOST] = 45;
+    rank[World.TILE.EXECUTIONER] = -20;
+    return rank[tile] || 0;
+  }
+
+  function chooseJourneyTarget(range) {
+    var center = World.VILLAGE_POS || [World.RADIUS, World.RADIUS];
+    var map = World.state && World.state.map;
+    var mask = World.state && World.state.mask;
+    var targets = [];
+
+    if (map && mask) {
+      for (var x = 0; x < map.length; x++) {
+        for (var y = 0; y < (map[x] || []).length; y++) {
+          if (!mask[x] || !mask[x][y]) continue;
+          var text = String(map[x][y] || '');
+          var tile = text.charAt(0);
+          if (!tile || tile === World.TILE.VILLAGE || text.indexOf('!') >= 0) continue;
+          if (!World.LANDMARKS || !World.LANDMARKS[tile] || isJourneyLandmarkVisited(x, y)) continue;
+          if (tile === World.TILE.EXECUTIONER && storeCount('s armour') < 1) continue;
+          if (tile === World.TILE.OUTPOST && World.outpostUsed && World.outpostUsed(x, y)) continue;
+          var distance = Math.abs(x - center[0]) + Math.abs(y - center[1]);
+          if (distance < 1 || distance > range) continue;
+          targets.push({
+            x: x, y: y, tile: tile,
+            score: journeyLandmarkPriority(tile) - distance * 3
+          });
+        }
+      }
+    }
+
+    targets.sort(function (a, b) { return b.score - a.score; });
+    for (var i = 0; i < targets.length; i++) {
+      var path = buildJourneyRoute(targets[i].x, targets[i].y);
+      if (path.length > 0 && path.length <= range + 2) {
+        return { x: targets[i].x, y: targets[i].y, route: path };
+      }
+    }
+
+    // No reachable landmark is in view: move toward the least-explored sector.
+    var options = journeyDirections.slice();
+    var ship = window.World.ship && World.ship.length ? World.ship[0] : null;
+    function explorationScore(direction) {
+      var unseen = 0, seen = 0;
+      var perpendicular = direction.x !== 0 ? { x: 0, y: 1 } : { x: 1, y: 0 };
+      for (var d = 1; d <= range; d++) {
+        for (var side = -2; side <= 2; side++) {
+          var sx = center[0] + direction.x * d + perpendicular.x * side;
+          var sy = center[1] + direction.y * d + perpendicular.y * side;
+          if (sx < 0 || sy < 0 || !mask[sx] || sy >= mask[sx].length) continue;
+          if (mask[sx][sy]) seen++;
+          else unseen++;
+        }
+      }
+      var shipBias = ship ? direction.x * Math.sign(ship.x) + direction.y * Math.sign(ship.y) : 0;
+      return unseen - seen * 0.15 + shipBias * 0.01;
+    }
+    options.sort(function (a, b) { return explorationScore(b) - explorationScore(a); });
+    var direction = options[0] || journeyDirections[0];
+    return {
+      x: Math.max(0, Math.min(World.RADIUS * 2, center[0] + direction.x * range)),
+      y: Math.max(0, Math.min(World.RADIUS * 2, center[1] + direction.y * range)),
+      route: []
+    };
+  }
+
+  function initializeJourney() {
+    if (!window.World || !World.state || !World.curPos || !window.Path) return null;
+    var range = journeyRangeFromWater();
+    var target = chooseJourneyTarget(range);
+    if (!target) return null;
+    if (target.x === World.curPos[0] && target.y === World.curPos[1]) return null;
+    var route = target.route && target.route.length
+      ? target.route : buildJourneyRoute(target.x, target.y);
+    if (!route.length) return null;
+    return {
+      target: [target.x, target.y],
+      maxDistance: range,
+      returning: false,
+      route: route
+    };
+  }
+
+  function beginJourneyReturn() {
+    if (!activeJourney || activeJourney.returning || !window.World || !World.curPos) return;
+    activeJourney.returning = true;
+    var home = World.VILLAGE_POS || [World.RADIUS, World.RADIUS];
+    activeJourney.target = [home[0], home[1]];
+    activeJourney.route = buildJourneyRoute(home[0], home[1]);
+  }
+
+  function moveJourneyStep() {
+    if (!activeJourney || !window.World || !World.curPos || !World.state) return false;
+    var target = activeJourney.target;
+
+    if (journeyPositionIs(target[0], target[1])) {
+      if (!activeJourney.returning) beginJourneyReturn();
+      else return false;
+    }
+    if (!activeJourney.route || !activeJourney.route.length) {
+      activeJourney.route = buildJourneyRoute(activeJourney.target[0], activeJourney.target[1]);
+    }
+    if (!activeJourney.route.length) {
+      if (!activeJourney.returning) beginJourneyReturn();
+      return true;
+    }
+
+    var next = activeJourney.route.shift();
+    var dx = next[0] - World.curPos[0];
+    var dy = next[1] - World.curPos[1];
+    if (Math.abs(dx) + Math.abs(dy) !== 1) {
+      activeJourney.route = buildJourneyRoute(activeJourney.target[0], activeJourney.target[1]);
+      return true;
+    }
+    World.move([dx, dy]);
+    lastAction = Date.now();
+    return true;
+  }
+
+  function handleAutoJourney() {
+    if (!enabled || !window.Engine || !Engine.activeModule) return false;
+    var module = Engine.activeModule;
+    if (lastObservedModule === window.World && module !== window.World) activeJourney = null;
+    lastObservedModule = module;
+
+    if (module === window.Path) {
+      if (!window.World || !window.Path || !window.$SM) return false;
+      if (!Path.outfit) Path.outfit = $SM.get('outfit') || {};
+      if (!activeJourney) {
+        // No cured meat means there is no safe trip to launch yet.
+        if (storeCount('cured meat') < 1) return false;
+        if (!prepareJourneySupplies()) return false;
+        Path.updateOutfitting();
+        var embark = document.getElementById('embarkButton');
+        if (embark && ready(embark) &&
+            Number(Path.outfit['cured meat']) > 0 && Date.now() - lastAction >= 200) {
+          embark.click();
+          lastAction = Date.now();
+          return true;
+        }
+        return false;
+      }
+      return false;
+    }
+
+    if (module === window.World) {
+      if (!World.state || !World.curPos) {
+        activeJourney = null;
+        return true;
+      }
+      markCurrentJourneyLandmark();
+      if (!activeJourney) {
+        activeJourney = initializeJourney();
+        if (!activeJourney) return true;
+      }
+
+      var distance = World.getDistance(World.curPos, World.VILLAGE_POS);
+      var food = Number(Path.outfit && Path.outfit['cured meat']) || 0;
+      var water = Number(World.water) || 0;
+      var hp = Number(World.health) || 0;
+      var maxHp = typeof World.getMaxHealth === 'function' ? World.getMaxHealth() : hp;
+      var foodMoves = Math.max(1, Number(World.MOVES_PER_FOOD) || 2);
+      if ($SM.hasPerk && $SM.hasPerk('slow metabolism')) foodMoves *= 2;
+
+      if (!activeJourney.returning) {
+        var atTarget = journeyPositionIs(activeJourney.target[0], activeJourney.target[1]);
+        var lowHealth = maxHp > 0 && hp / maxHp <= 0.35;
+        var lowWater = water <= distance + 2;
+        var lowFood = food <= 0 || food * foodMoves < distance + 1;
+        var tooFar = distance >= activeJourney.maxDistance;
+        if (atTarget || lowHealth || lowWater || lowFood || tooFar || distance >= journeyHazardLimit()) {
+          beginJourneyReturn();
+        }
+      }
+
+      if (Date.now() - lastAction < 350) return true;
+      return moveJourneyStep();
+    }
+
+    return false;
+  }
+
   function tick() {
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
-    // Resolve active random events before normal settlement/exploration actions.
+    // Resolve active random events before journey movement or normal actions.
     if (handleEvent()) return;
+    // Equip, embark, explore safely, and return home when on the journey screens.
+    if (handleAutoJourney()) return;
     // Build a sustainable economy without consuming every villager as a worker.
     if (manageWorkers()) return;
     // Prefer buttons in the current view; the game's own disabled state
