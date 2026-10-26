@@ -463,7 +463,9 @@
   }
 
   function journeyHazardLimit() {
-    if (storeCount('s armour') > 0 || storeCount('kinetic armour') > 0) return 29;
+    // Match the game's actual distance checks: only iron/steel armour affect
+    // the wilderness danger thresholds in World.checkDanger().
+    if (storeCount('s armour') > 0) return 29;
     if (storeCount('i armour') > 0) return 17;
     return 7;
   }
