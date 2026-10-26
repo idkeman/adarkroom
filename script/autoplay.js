@@ -199,6 +199,7 @@
   var combatPolicyCache = {};
   var combatPolicyPending = {};
   var combatEndCandidateAt = 0;
+  var learningFlushInProgress = false;
 
   function combatContext(hp, maxHp, playerStatus, enemyStunned) {
     if (enemyStunned) return 'enemy_stunned';
@@ -275,22 +276,28 @@
   }
 
   function flushCombatLearningQueue() {
+    if (learningFlushInProgress) return;
     var queue = [];
     try { queue = JSON.parse(localStorage.getItem('adrCombatAILearningQueue') || '[]'); } catch (e) {}
     if (!queue.length || !navigator.onLine) return;
+    learningFlushInProgress = true;
     var batch = queue[0];
     var index = 0;
     function sendNext() {
       if (index >= batch.actions.length) {
         queue.shift();
         try { localStorage.setItem('adrCombatAILearningQueue', JSON.stringify(queue)); } catch (e) {}
+        learningFlushInProgress = false;
         if (queue.length) flushCombatLearningQueue();
         return;
       }
       var item = batch.actions[index++];
       requestCombatAI({ op: 'outcome', context: batch.context, won: item.reward > 0, actions: [item.action], reward: item.reward })
         .then(function () { sendNext(); })
-        .catch(function () { index--; });
+        .catch(function () {
+          index--;
+          learningFlushInProgress = false;
+        });
     }
     sendNext();
   }
