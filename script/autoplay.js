@@ -364,7 +364,7 @@
     if (!combatEpisode) return;
     var action = norm(el.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48);
     if (!action) action = 'unknown';
-    combatEpisode.actions.push(action);
+    combatEpisode.actions.push({ action: action, context: context || combatEpisode.context });
     if (combatEpisode.actions.length > 40) combatEpisode.actions.shift();
     loadCombatPolicy(context || combatEpisode.context);
   }
@@ -377,9 +377,13 @@
     if (!episode.actions.length) return;
     // Later choices receive more credit/blame because they are closest to the
     // outcome. This is a lightweight online reinforcement-learning signal.
-    var actions = episode.actions.map(function (action, index, all) {
+    var actions = episode.actions.map(function (entry, index, all) {
       var recency = (index + 1) / all.length;
-      return { action: action, reward: won ? (0.35 + 0.65 * recency) : -(0.35 + 0.65 * recency) };
+      return {
+        action: typeof entry === 'string' ? entry : entry.action,
+        context: typeof entry === 'string' ? episode.context : (entry.context || episode.context),
+        reward: won ? (0.35 + 0.65 * recency) : -(0.35 + 0.65 * recency)
+      };
     });
     var queue = [];
     try { queue = JSON.parse(localStorage.getItem('adrCombatAILearningQueue') || '[]'); } catch (e) {}
@@ -405,7 +409,7 @@
         return;
       }
       var item = batch.actions[index++];
-      requestCombatAI({ op: 'outcome', context: batch.context, won: item.reward > 0, actions: [item.action], reward: item.reward })
+      requestCombatAI({ op: 'outcome', context: item.context || batch.context, won: item.reward > 0, actions: [item.action], reward: item.reward })
         .then(function () { sendNext(); })
         .catch(function () {
           index--;
@@ -615,8 +619,11 @@
           return bHeal - aHeal || aValue - bValue;
         });
         if (healButtons.length) {
-          recordCombatChoice(healButtons[0], aiContext);
-          return clickReady(healButtons[0]);
+          for (var healIndex = 0; healIndex < healButtons.length; healIndex++) {
+            if (!ready(healButtons[healIndex])) continue;
+            recordCombatChoice(healButtons[healIndex], aiContext);
+            if (clickReady(healButtons[healIndex])) return true;
+          }
         }
       }
 
@@ -697,8 +704,13 @@
         return attackValue(b) - attackValue(a);
       });
       if (attacks.length) {
-        recordCombatChoice(attacks[0], aiContext);
-        return clickReady(attacks[0]);
+        // Ranked fallback: if the top option became unavailable between scoring
+        // and execution, attempt the next best action rather than wasting a tick.
+        for (var attackIndex = 0; attackIndex < attacks.length; attackIndex++) {
+          if (!ready(attacks[attackIndex])) continue;
+          recordCombatChoice(attacks[attackIndex], aiContext);
+          if (clickReady(attacks[attackIndex])) return true;
+        }
       }
       return true;
     }
