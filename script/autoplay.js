@@ -237,6 +237,86 @@
     return Math.max(-4, Math.min(4, Number(stat.avgReward) * 4)) * confidence;
   }
 
+  // Combat-only loadout planner. It enumerates every supported weapon and
+  // compares damage rate, hit chance, cooldown, ammunition burden, crafting
+  // cost, and whether the current save can reasonably obtain its ingredients.
+  function combatInventory() {
+    return window.$SM && $SM.get ? ($SM.get('stores') || {}) : {};
+  }
+
+  function combatWeaponPlan() {
+    if (!window.World || !World.Weapons) return null;
+    var stores = combatInventory();
+    var candidates = [];
+    Object.keys(World.Weapons).forEach(function(name) {
+      var weapon = World.Weapons[name];
+      if (!weapon) return;
+      var damage = weapon.damage === 'stun' ? 0 : Math.max(0, Number(weapon.damage) || 0);
+      var cooldown = Math.max(0.5, Number(weapon.cooldown) || 1);
+      var cost = weapon.cost || {};
+      var ammoCount = 0;
+      var ammoAvailable = true;
+      Object.keys(cost).forEach(function(key) {
+        var have = Number(stores[key]) || 0;
+        ammoCount += have;
+        if (have < Number(cost[key] || 0)) ammoAvailable = false;
+      });
+      var inventory = Number(stores[name]) || 0;
+      var expectedDamage = damage * (window.World.getHitChance ? World.getHitChance() : 0.8);
+      var score = expectedDamage / cooldown;
+      if (weapon.damage === 'stun') score = 2.2 + (name === 'disruptor' ? 1.1 : 0);
+      if (name === 'grenade') score -= 0.65; // high burst, expensive consumable
+      if (name === 'rifle') score += (Number(stores.bullets) || 0) >= 8 ? 0.5 : 0;
+      if (name === 'laser rifle' || name === 'plasma rifle') score += (Number(stores['energy cell']) || 0) >= 8 ? 0.7 : -0.25;
+      if (name === 'fists' && window.$SM.hasPerk && $SM.hasPerk('unarmed master')) score += 1.2;
+      var craft = (window.Room && Room.Craftables && Room.Craftables[name]) ||
+        (window.Fabricator && Fabricator.Craftables && Fabricator.Craftables[name]);
+      var cost = craft && typeof craft.cost === 'function' ? craft.cost() : {};
+      var missing = 0, missingRare = 0;
+      Object.keys(cost || {}).forEach(function(key) {
+        var gap = Math.max(0, (Number(cost[key]) || 0) - (Number(stores[key]) || 0));
+        missing += gap;
+        var rarity = ({'alien alloy':8, steel:4, iron:2.5, sulphur:2, coal:1.5, leather:1.5, teeth:1.3, scales:1.3, wood:0.2, fur:0.25})[key];
+        missingRare += gap * (rarity || 1);
+      });
+      var unlocked = !craft || !craft.blueprintRequired ||
+        Boolean($SM && $SM.get && $SM.get("character.blueprints['" + name + "']"));
+      var canCraft = Boolean(craft && unlocked && missing === 0);
+      // Existing weapons win over an aspirational weapon unless the upgrade is
+      // meaningfully stronger and the cost can be paid without crippling supplies.
+      if (inventory > 0 && ammoAvailable) score += 1.5;
+      if (inventory <= 0 && canCraft) score += 0.9;
+      if (!ammoAvailable) score -= 1.7;
+      if (!unlocked) score -= 2.5;
+      score -= missingRare * 0.008;
+      candidates.push({name:name, weapon:weapon, score:score, inventory:inventory,
+        ammoAvailable:ammoAvailable, canCraft:canCraft, missing:missing,
+        missingRare:missingRare, cost:cost || {}, craft:craft || null});
+    });
+    candidates.sort(function(a,b) { return b.score - a.score; });
+    return candidates.length ? { best:candidates[0], candidates:candidates } : null;
+  }
+
+  function combatMaterialUrgency(resource) {
+    var plan = combatWeaponPlan();
+    if (!plan || !plan.best) return 0;
+    var stores = combatInventory();
+    var candidates = plan.candidates;
+    var best = plan.best;
+    // Only buy materials toward a stronger weapon if the best attainable
+    // upgrade is currently blocked by that ingredient. Do not blindly stockpile.
+    var bonus = 0;
+    candidates.forEach(function(candidate) {
+      if (!candidate.craft || candidate.inventory > 0 || !candidate.missing) return;
+      if (candidate.score < best.score + 0.8) return;
+      var gap = Math.max(0, (Number(candidate.cost[resource]) || 0) - (Number(stores[resource]) || 0));
+      if (gap <= 0) return;
+      var value = Math.max(0, candidate.score - best.score + 1);
+      bonus = Math.max(bonus, Math.min(32, value * 7 + Math.min(10, gap * 0.1)));
+    });
+    return bonus;
+  }
+
   function beginCombatLearning(event, enemy, context) {
     if (combatEpisode && combatEpisode.event === event && combatEpisode.enemy === enemy) return;
     // A replacement enemy or a new event means the previous enemy was defeated,
@@ -384,6 +464,11 @@
         value += n * perUnit;
       });
 
+      // When a trade offers a weapon ingredient, value it by the best
+      // upgrade it unlocks, not by a generic resource price alone.
+      Object.keys(reward).forEach(function(key) {
+        value += combatMaterialUrgency(key);
+      });
       var cost = info.cost || {};
       Object.keys(cost).forEach(function (key) {
         var n = Number(cost[key]) || 0;
@@ -818,7 +903,29 @@
     Object.keys(Path.outfit || {}).forEach(function (name) { outfit[name] = Path.outfit[name]; });
     managedJourneyItems().forEach(function (name) { outfit[name] = 0; });
 
+    // Prefer the strongest loadout that fits with food and supplies.
+    // The general journey selector remains the fallback when no combat plan
+    // can be carried with a safe food reserve.
+    var combatPlan = combatWeaponPlan();
+    var preferred = combatPlan && combatPlan.best;
     var weapon = chooseJourneyWeapon(capacity);
+    if (preferred && preferred.name !== 'fists' && preferred.inventory > 0 &&
+        preferred.weapon && (preferred.ammoAvailable || !Object.keys(preferred.weapon.cost || {}).length)) {
+      var preferredWeight = Path.getWeight(preferred.name);
+      var preferredAmmo = {};
+      var preferredAmmoWeight = 0;
+      Object.keys(preferred.weapon.cost || {}).forEach(function(resource) {
+        var available = Math.floor(Number(stores[resource]) || 0);
+        var count = Math.min(8, available);
+        if (count > 0) {
+          preferredAmmo[resource] = count;
+          preferredAmmoWeight += count * Path.getWeight(resource);
+        }
+      });
+      if (preferredWeight + preferredAmmoWeight < capacity - 2) {
+        weapon = {name:preferred.name, score:preferred.score, weight:preferredWeight, ammo:preferredAmmo};
+      }
+    }
     if (weapon) {
       if (Object.keys(weapon.ammo).some(function (name) { return name === weapon.name; })) {
         outfit[weapon.name] = Math.min(Number(stores[weapon.name]) || 0, weapon.ammo[weapon.name]);
