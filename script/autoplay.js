@@ -191,6 +191,129 @@
     return true;
   }
 
+  // Persistent combat learning: Supabase stores outcome-weighted action scores.
+  // Local storage is only a short-lived queue so an offline death can sync later.
+  var COMBAT_AI_URL = 'https://dkwmkvruzebnqlmvwzhy.supabase.co/functions/v1/adr-combat-ai';
+  var COMBAT_AI_KEY = 'sb_publishable_Tur9X4MaQjH__4DnEtwAAQ_Xy9xVl5P';
+  var combatEpisode = null;
+  var combatPolicyCache = {};
+  var combatPolicyPending = {};
+  var combatEndCandidateAt = 0;
+
+  function combatContext(hp, maxHp, playerStatus, enemyStunned) {
+    if (enemyStunned) return 'enemy_stunned';
+    if (playerStatus === 'shield') return 'shielded';
+    var ratio = maxHp > 0 ? hp / maxHp : 1;
+    return ratio <= 0.33 ? 'low_hp' : ratio <= 0.66 ? 'mid_hp' : 'high_hp';
+  }
+
+  function requestCombatAI(payload) {
+    return fetch(COMBAT_AI_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': COMBAT_AI_KEY, 'Authorization': 'Bearer ' + COMBAT_AI_KEY },
+      body: JSON.stringify(payload)
+    }).then(function (response) {
+      if (!response.ok) throw new Error('combat AI request failed');
+      return response.json();
+    });
+  }
+
+  function loadCombatPolicy(context) {
+    if (combatPolicyCache[context] || combatPolicyPending[context]) return;
+    combatPolicyPending[context] = true;
+    requestCombatAI({ op: 'policy', context: context, actions: ['attack_fists'] })
+      .then(function (data) { combatPolicyCache[context] = data.stats || {}; })
+      .catch(function () { combatPolicyCache[context] = {}; })
+      .then(function () { delete combatPolicyPending[context]; });
+  }
+
+  function learnedActionBonus(context, action) {
+    var stat = combatPolicyCache[context] && combatPolicyCache[context][action];
+    if (!stat || Number(stat.attempts) < 2) return 0;
+    // Conservative exploration: only learned results with repeated evidence
+    // influence the tactical score; strong failures can demote a bad habit.
+    var confidence = Math.min(1, Number(stat.attempts) / 8);
+    return Math.max(-4, Math.min(4, Number(stat.avgReward) * 4)) * confidence;
+  }
+
+  function beginCombatLearning(event, enemy, context) {
+    if (combatEpisode && combatEpisode.event === event && combatEpisode.enemy === enemy) return;
+    if (combatEpisode) finishCombatLearning(false);
+    combatEpisode = { event: event, enemy: enemy, context: context, actions: [], startedAt: Date.now() };
+    combatEndCandidateAt = 0;
+    loadCombatPolicy(context);
+  }
+
+  function recordCombatChoice(el, context) {
+    if (!combatEpisode) return;
+    var action = norm(el.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48);
+    if (!action) action = 'unknown';
+    combatEpisode.actions.push(action);
+    if (combatEpisode.actions.length > 40) combatEpisode.actions.shift();
+    loadCombatPolicy(context || combatEpisode.context);
+  }
+
+  function finishCombatLearning(won) {
+    if (!combatEpisode) return;
+    var episode = combatEpisode;
+    combatEpisode = null;
+    combatEndCandidateAt = 0;
+    if (!episode.actions.length) return;
+    // Later choices receive more credit/blame because they are closest to the
+    // outcome. This is a lightweight online reinforcement-learning signal.
+    var actions = episode.actions.map(function (action, index, all) {
+      var recency = (index + 1) / all.length;
+      return { action: action, reward: won ? (0.35 + 0.65 * recency) : -(0.35 + 0.65 * recency) };
+    });
+    var queue = [];
+    try { queue = JSON.parse(localStorage.getItem('adrCombatAILearningQueue') || '[]'); } catch (e) {}
+    queue.push({ context: episode.context, won: won, actions: actions });
+    try { localStorage.setItem('adrCombatAILearningQueue', JSON.stringify(queue.slice(-20))); } catch (e) {}
+    flushCombatLearningQueue();
+  }
+
+  function flushCombatLearningQueue() {
+    var queue = [];
+    try { queue = JSON.parse(localStorage.getItem('adrCombatAILearningQueue') || '[]'); } catch (e) {}
+    if (!queue.length || !navigator.onLine) return;
+    var batch = queue[0];
+    var index = 0;
+    function sendNext() {
+      if (index >= batch.actions.length) {
+        queue.shift();
+        try { localStorage.setItem('adrCombatAILearningQueue', JSON.stringify(queue)); } catch (e) {}
+        if (queue.length) flushCombatLearningQueue();
+        return;
+      }
+      var item = batch.actions[index++];
+      requestCombatAI({ op: 'outcome', context: batch.context, won: item.reward > 0, actions: [item.action], reward: item.reward })
+        .then(function () { sendNext(); })
+        .catch(function () { index--; });
+    }
+    sendNext();
+  }
+
+  function monitorCombatLearning() {
+    if (!combatEpisode) return;
+    if (window.World && World.dead) {
+      finishCombatLearning(false);
+      return;
+    }
+    var event = window.Events && Events.activeEvent && Events.activeEvent();
+    var enemy = event && event.eventPanel && event.eventPanel.length
+      ? event.eventPanel[0].querySelector('#enemy') : null;
+    if (enemy && visible(enemy)) {
+      combatEndCandidateAt = 0;
+      return;
+    }
+    if (!combatEndCandidateAt) combatEndCandidateAt = Date.now();
+    // Allow scene transitions to replace the enemy before deciding it was defeated.
+    if (Date.now() - combatEndCandidateAt >= 1400) {
+      if (!event || !event.eventPanel || !visible(event.eventPanel[0])) finishCombatLearning(true);
+      else if (!event.eventPanel[0].querySelector('#enemy')) finishCombatLearning(true);
+    }
+  }
+
   function eventChoiceScore(el, info) {
     var label = norm((el.innerText || el.textContent) + ' ' + el.id);
     var value = 0;
@@ -316,6 +439,9 @@
       var hpRatio = maxHp > 0 ? hp / maxHp : 1;
       var enemyStatus = window.jQuery ? jQuery(enemy).data('status') : enemy.getAttribute('data-status');
       var enemyStunned = Boolean(window.jQuery ? jQuery(enemy).data('stunned') : enemy.getAttribute('data-stunned') === 'true');
+      var playerStatusForContext = window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status');
+      var aiContext = combatContext(hp, maxHp, playerStatusForContext, enemyStunned);
+      beginCombatLearning(event, enemy, aiContext);
       var scene = window.Events && Events.activeEvent() && Events.activeEvent().scenes
         ? Events.activeEvent().scenes[Events.activeScene] : null;
       var enemyDamage = Math.max(0, Number(scene && scene.damage) || 0);
@@ -360,7 +486,10 @@
           if (aEnough && bEnough) return aValue - bValue;
           return bHeal - aHeal || aValue - bValue;
         });
-        if (healButtons.length) return clickReady(healButtons[0]);
+        if (healButtons.length) {
+          recordCombatChoice(healButtons[0], aiContext);
+          return clickReady(healButtons[0]);
+        }
       }
 
       // A shield prevents the next incoming hit. Use it against a high-damage
@@ -368,6 +497,7 @@
       var shield = panel.querySelector('#buttons #shld');
       if (shield && ready(shield) && threat >= 5 && hpRatio <= 0.8 &&
           (window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status')) !== 'shield') {
+        recordCombatChoice(shield, aiContext);
         return clickReady(shield);
       }
 
@@ -432,11 +562,15 @@
           if (name === 'fists' && window.$SM && $SM.hasPerk && $SM.hasPerk('unarmed master')) {
             score += 0.8;
           }
+          score += learnedActionBonus(aiContext, norm(el.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48));
           return score;
         }
         return attackValue(b) - attackValue(a);
       });
-      if (attacks.length) return clickReady(attacks[0]);
+      if (attacks.length) {
+        recordCombatChoice(attacks[0], aiContext);
+        return clickReady(attacks[0]);
+      }
       return true;
     }
 
@@ -983,6 +1117,8 @@
 
   function tick() {
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
+    flushCombatLearningQueue();
+    monitorCombatLearning();
     // Resolve active random events before journey movement or normal actions.
     if (handleEvent()) return;
     // Equip, embark, explore safely, and return home when on the journey screens.
