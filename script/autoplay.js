@@ -447,7 +447,8 @@
       var maxHp = window.World && typeof World.getMaxHealth === 'function' ? World.getMaxHealth() : hp;
       var hpRatio = maxHp > 0 ? hp / maxHp : 1;
       var enemyStatus = window.jQuery ? jQuery(enemy).data('status') : enemy.getAttribute('data-status');
-      var enemyStunned = Boolean(window.jQuery ? jQuery(enemy).data('stunned') : enemy.getAttribute('data-stunned') === 'true');
+      var enemyStunned = enemyStatus === 'stunned' || Boolean(enemy.classList && enemy.classList.contains('stunned')) ||
+        Boolean(window.jQuery ? jQuery(enemy).data('stunned') : enemy.getAttribute('data-stunned') === 'true');
       var playerStatusForContext = window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status');
       var aiContext = combatContext(hp, maxHp, playerStatusForContext, enemyStunned);
       beginCombatLearning(event, enemy, aiContext);
@@ -516,7 +517,7 @@
       )).filter(ready);
       attacks.sort(function(a, b) {
         function attackValue(el) {
-          var name = el.id.replace(/^attack_/, '').replace(/-/g, ' ');
+          var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
           var weapon = window.World && World.Weapons && World.Weapons[name];
           if (!weapon) return el.id === 'attack_fists' ? 0.5 : -100;
 
