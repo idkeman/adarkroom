@@ -238,7 +238,9 @@
 
   function beginCombatLearning(event, enemy, context) {
     if (combatEpisode && combatEpisode.event === event && combatEpisode.enemy === enemy) return;
-    if (combatEpisode) finishCombatLearning(false);
+    // A replacement enemy or a new event means the previous enemy was defeated,
+    // unless the game has already marked the expedition as a death.
+    if (combatEpisode) finishCombatLearning(!(window.World && World.dead));
     combatEpisode = { event: event, enemy: enemy, context: context, actions: [], startedAt: Date.now() };
     combatEndCandidateAt = 0;
     loadCombatPolicy(context);
