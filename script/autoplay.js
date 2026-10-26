@@ -123,6 +123,16 @@
       'torch': 28
     };
     bonus = ranks[thing] || 35;
+    if (window.World && World.Weapons && World.Weapons[thing]) {
+      var plan = combatWeaponPlan();
+      if (plan) {
+        var current = plan.candidates.filter(function(candidate) {
+          return candidate.inventory > 0 && candidate.ammoAvailable;
+        }).sort(function(a,b) { return b.score - a.score; })[0];
+        var proposed = plan.candidates.filter(function(candidate) { return candidate.name === thing; })[0];
+        if (proposed && current && proposed.score > current.score + 0.5) bonus += Math.min(45, (proposed.score - current.score) * 12);
+      }
+    }
 
     // Don't keep expanding housing when there is already ample unused capacity;
     // do invest in housing when population is near its cap or workers are scarce.
@@ -315,12 +325,27 @@
       var improvement = candidate.score - baseline;
       bonus = Math.max(bonus, Math.min(36, improvement * 8 + Math.min(12, gap * 0.12)));
     });
-    // Replenish the ammunition of the current best weapon only when stock is low.
-    var best = plan.candidates[0];
-    var ammoCost = best && best.weapon ? (best.weapon.cost || {}) : {};
-    if (best && best.inventory > 0 && Object.prototype.hasOwnProperty.call(ammoCost, resource)) {
+    // Replenish ammunition for the best weapon that is actually owned and usable.
+    var owned = plan.candidates.filter(function(candidate) {
+      return candidate.inventory > 0 && candidate.ammoAvailable && candidate.weapon &&
+        Object.keys(candidate.weapon.cost || {}).length > 0;
+    }).sort(function(a,b) { return b.score - a.score; })[0];
+    var ammoCost = owned && owned.weapon ? (owned.weapon.cost || {}) : {};
+    if (owned && Object.prototype.hasOwnProperty.call(ammoCost, resource)) {
       var have = Number(stores[resource]) || 0;
-      if (have < 6) bonus = Math.max(bonus, 14 + (6 - have) * 2);
+      if (have < 8) bonus = Math.max(bonus, 16 + (8 - have) * 2);
+    }
+    // Some strong weapons are purchased directly at the trading post instead
+    // of crafted. Evaluate those purchases as weapon candidates too.
+    if (window.Room && Room.TradeGoods && Room.TradeGoods[resource] &&
+        Room.TradeGoods[resource].type === 'weapon' && !(Number(stores[resource]) > 0) &&
+        window.World && World.Weapons && World.Weapons[resource]) {
+      var directWeapon = World.Weapons[resource];
+      var directScore = directWeapon.damage === 'stun' ? 2.8 :
+        (Math.max(0, Number(directWeapon.damage) || 0) *
+          (window.World.getHitChance ? World.getHitChance() : 0.8) /
+          Math.max(0.5, Number(directWeapon.cooldown) || 1));
+      if (directScore > baseline + 0.5) bonus = Math.max(bonus, Math.min(34, 10 + (directScore - baseline) * 8));
     }
     return bonus;
   }
