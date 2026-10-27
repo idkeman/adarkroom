@@ -668,6 +668,15 @@
     if (!combatEpisode) return;
     if (window.World && World.dead) {
       finishCombatLearning(false);
+      if (window.__adrLiveJourneyRunId || activeJourney) {
+        var failedRun = window.__adrLiveJourneyRunId || null;
+        recordJourneyFailure('player_died');
+        if (failedRun) {
+          window.__adrLiveJourneyRunId = null;
+          finishAIRun(failedRun, 'failed', { source: 'live_journey', reason: 'player_died',
+            position: World.curPos || null, inventory: combatInventory(), simulation: false }).catch(function() {});
+        }
+      }
       return;
     }
     var event = window.Events && Events.activeEvent && Events.activeEvent();
@@ -1249,6 +1258,17 @@
       return true;
     }
 
+    // Adapt the kit after repeated losses: preserve the rifle/ammo baseline,
+    // but spend available capacity on extra healing and high-impact options
+    // before optional supplies or excess food. A failed trip increments a
+    // persistent streak, so the change survives page reloads.
+    var lossStreak = Math.max(0, Number(window.__adrJourneyLossStreak) || 0);
+    try {
+      var savedFailures = $SM.get('config.autoplayJourneyFailures') || {};
+      Object.keys(savedFailures).forEach(function(key) {
+        lossStreak = Math.max(lossStreak, Math.min(5, Number(savedFailures[key].count) || 0));
+      });
+    } catch (e) {}
     // Plan combat first: rifle + ammunition, then a melee fallback. Eight
     // bullets is the default reserve, scaled down only by actual inventory or
     // bag capacity. Ammunition weighs little, so don't trade it for excess meat.
@@ -1280,11 +1300,11 @@
     }
 
     // Carry grenades when owned, after reserving the primary gun, ammunition,
-    // and melee fallback. Prefer up to two; capacity and food planning below
-    // will reduce this if the pack cannot support the full loadout.
+    // and melee fallback. Repeated losses increase the preferred reserve, within
+    // the same hard inventory/capacity limits.
     if (available('grenade') > 0) {
       var grenadeWeight = Math.max(0.01, Number(Path.getWeight('grenade')) || 1);
-      var grenadeCount = Math.min(2, available('grenade'),
+      var grenadeCount = Math.min(lossStreak >= 2 ? 3 : 2, available('grenade'),
         Math.floor(Math.max(0, capacity - outfitWeight(outfit)) / grenadeWeight));
       if (grenadeCount > 0) outfit.grenade = grenadeCount;
     }
@@ -1313,6 +1333,10 @@
     if ($SM.hasPerk && $SM.hasPerk('slow metabolism')) foodMoves *= 2;
     var safeRange = journeyRangeFromWater();
     var foodTarget = Math.max(1, Math.ceil((safeRange * 2) / foodMoves) + 1);
+    // After losses, reduce ambition rather than repeating the same risky trip.
+    // Target selection also penalizes failed coordinates; this shortens the
+    // next expedition until stronger gear or better supplies are available.
+    if (lossStreak > 0) foodTarget = Math.max(1, Math.floor(foodTarget / (1 + Math.min(2, lossStreak) * 0.35)));
     var remainingRoom = Math.max(0, capacity - outfitWeight(outfit));
     var foodRoom = Math.floor(remainingRoom / Math.max(0.01, Path.getWeight('cured meat')));
     var food = Math.min(availableFood, foodTarget, foodRoom);
@@ -1420,8 +1444,34 @@
     return rank[tile] || 0;
   }
 
+  function journeyFailureMemory() {
+    return window.$SM && $SM.get ? ($SM.get('config.autoplayJourneyFailures') || {}) : {};
+  }
+
+  function recordJourneyFailure(reason) {
+    if (!window.$SM || !World || !World.curPos) return;
+    var memory = journeyFailureMemory(), next = {};
+    Object.keys(memory).forEach(function(key) { next[key] = memory[key]; });
+    var target = activeJourney && activeJourney.target;
+    var key = target ? target[0] + ',' + target[1] : 'unknown';
+    var prior = next[key] || { count: 0, lastReason: '', lastAt: 0 };
+    next[key] = { count: (Number(prior.count) || 0) + 1, lastReason: reason || 'journey_loss',
+      lastAt: Date.now(), tile: target ? baseTileAt(target[0], target[1]) : '' };
+    $SM.set('config.autoplayJourneyFailures', next, false);
+    sendAIEventBatch([{ run_id: window.__adrLiveJourneyRunId || null, event_type: 'journey_failed',
+      context: 'default', action: 'adapt_loadout_and_route', reward: -1,
+      payload: { source: 'live_journey', reason: reason || 'journey_loss', target: target || null,
+        position: World.curPos, health: Number(World.health) || 0, inventory: combatInventory(),
+        failure_count: next[key].count, simulation: false } }]).catch(function() {});
+    // A loss invalidates the current expedition plan. The next attempt is
+    // forced to use a different route where possible and a more defensive kit.
+    activeJourney = null;
+    window.__adrJourneyLossStreak = (Number(window.__adrJourneyLossStreak) || 0) + 1;
+  }
+
   function chooseJourneyTarget(range) {
     var center = World.VILLAGE_POS || [World.RADIUS, World.RADIUS];
+    var failures = journeyFailureMemory();
     var map = World.state && World.state.map;
     var mask = World.state && World.state.mask;
     var targets = [];
@@ -1438,9 +1488,14 @@
           if (tile === World.TILE.OUTPOST && World.outpostUsed && World.outpostUsed(x, y)) continue;
           var distance = Math.abs(x - center[0]) + Math.abs(y - center[1]);
           if (distance < 1 || distance > range) continue;
+          var failure = failures[x + ',' + y];
+          var failureCount = failure ? Math.max(0, Number(failure.count) || 0) : 0;
+          // A failed destination is not permanently banned: it receives a
+          // strong penalty so the AI tries another landmark, and can revisit
+          // later after safer equipment/progression changes.
           targets.push({
             x: x, y: y, tile: tile,
-            score: journeyLandmarkPriority(tile) - distance * 3
+            score: journeyLandmarkPriority(tile) - distance * 3 - failureCount * 45
           });
         }
       }
