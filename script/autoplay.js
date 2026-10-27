@@ -17,8 +17,8 @@
       if (!timer) timer = window.setInterval(tick, 250);
       tick();
     } else {
-      finishAdaptiveRun('completed');
       settleAdaptiveAction(false,'autoplay_disabled',adaptiveSnapshot());
+      finishAdaptiveRun('completed');
       if (timer) {
         window.clearInterval(timer);
         timer = null;
@@ -1607,15 +1607,15 @@
     combatTestPanel.id = 'adr-combat-test-panel';
     combatTestPanel.style.cssText = 'position:fixed;z-index:2147483000;top:12px;right:12px;width:min(520px,calc(100vw - 24px));max-height:85vh;overflow:auto;background:#171717;color:#f4f4f4;border:1px solid #777;border-radius:10px;padding:14px;box-shadow:0 8px 32px #0009;font:13px/1.45 system-ui,sans-serif;display:none';
     combatTestPanel.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px"><strong style="font-size:16px">AI journey lab & telemetry</strong><button type="button" data-adr-test="close" style="background:#444;color:white;border:0;border-radius:5px;padding:5px 9px;cursor:pointer">Close</button></div>' +
-      '<div style="color:#ccc;margin-bottom:10px">Simulated journeys explore a map, value resources, remember tried edges, and store decisions/statistics in Supabase. Simulation does not change your actual save.</div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px"><strong style="font-size:16px">Adaptive Autoplay AI & Supabase</strong><button type="button" data-adr-test="close" style="background:#444;color:white;border:0;border-radius:5px;padding:5px 9px;cursor:pointer">Close</button></div>' +
+      '<div style="color:#ccc;margin-bottom:10px">AI rule: actions that reveal new content, change inventory/state, unlock something, or advance the story are rewarded. If an action makes no progress for 4.5 seconds, it is penalized and avoided for 30 seconds while the AI tries another action. Decisions, outcomes, journey data, and learned action statistics are stored in Supabase.</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px">' +
       '<button type="button" data-adr-test="journey" style="padding:7px 9px;cursor:pointer">Run 1 learning journey</button>' +
       '<button type="button" data-adr-test="combat" style="padding:7px 9px;cursor:pointer">Run 100 combat rounds</button>' +
       '<button type="button" data-adr-test="connection" style="padding:7px 9px;cursor:pointer">Check API</button></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' +
-      '<button type="button" data-adr-test="runs">View runs</button><button type="button" data-adr-test="events">View events</button>' +
-      '<button type="button" data-adr-test="actions">View action stats</button><button type="button" data-adr-test="paths">View path stats</button>' +
+      '<button type="button" data-adr-test="runs">View runs</button><button type="button" data-adr-test="events">View decisions/events</button>' +
+      '<button type="button" data-adr-test="actions">View learned action stats</button><button type="button" data-adr-test="paths">View path stats</button>' +
       '<button type="button" data-adr-test="inventory">View inventory snapshots</button><button type="button" data-adr-test="policy">View combat policy</button><button type="button" data-adr-test="refresh">Refresh all outputs</button></div>' +
       '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#242424;border-radius:6px;padding:10px;min-height:90px;max-height:45vh;overflow:auto">Ready. Run a journey or inspect a Supabase table.</div>' +
       '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcut: Ctrl+Shift+P. Live actions are logged when possible; simulated outcomes are clearly marked.</div>';
