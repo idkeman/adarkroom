@@ -252,16 +252,45 @@
     // fight begins; this avoids reusing pre-learning statistics indefinitely.
   }
 
-  function learnedActionBonus(context, action) {
-    var stat = combatPolicyCache[context] && combatPolicyCache[context][action];
+  var LOCAL_COMBAT_LEARNING_KEY = 'adrCombatAILocalPolicyV1';
+
+  function readLocalCombatPolicy() {
+    try {
+      var data = JSON.parse(localStorage.getItem(LOCAL_COMBAT_LEARNING_KEY) || '{}');
+      return data && typeof data === 'object' ? data : {};
+    } catch (e) { return {}; }
+  }
+
+  function writeLocalCombatOutcome(context, action, reward) {
+    if (!context || !action) return;
+    var policy = readLocalCombatPolicy();
+    if (!policy[context]) policy[context] = {};
+    var stat = policy[context][action] || { attempts: 0, reward_sum: 0, wins: 0, failures: 0 };
+    stat.attempts = (Number(stat.attempts) || 0) + 1;
+    stat.reward_sum = (Number(stat.reward_sum) || 0) + reward;
+    if (reward > 0) stat.wins = (Number(stat.wins) || 0) + 1;
+    if (reward < 0) stat.failures = (Number(stat.failures) || 0) + 1;
+    policy[context][action] = stat;
+    try { localStorage.setItem(LOCAL_COMBAT_LEARNING_KEY, JSON.stringify(policy)); } catch (e) {}
+  }
+
+  function localLearnedActionBonus(context, action) {
+    var policy = readLocalCombatPolicy();
+    var stat = policy[context] && policy[context][action];
     if (!stat || Number(stat.attempts) < 2) return 0;
     var attempts = Math.max(0, Number(stat.attempts) || 0);
     var confidence = Math.min(1, attempts / 5);
-    var average = Number(stat.avgReward) || 0;
-    // Stronger but bounded feedback: repeated bad outcomes demote an action,
-    // while repeated wins promote it. The cap prevents learning from overriding
-    // basic safety constraints or making a single noisy outcome decisive.
+    var average = (Number(stat.reward_sum) || 0) / Math.max(1, attempts);
     return Math.max(-7, Math.min(7, average * 7)) * confidence;
+  }
+
+  function learnedActionBonus(context, action) {
+    var stat = combatPolicyCache[context] && combatPolicyCache[context][action];
+    var attempts = stat ? Math.max(0, Number(stat.attempts) || 0) : 0;
+    var confidence = Math.min(1, attempts / 5);
+    var average = stat ? (Number(stat.avgReward) || 0) : 0;
+    var serverBonus = attempts >= 2 ? Math.max(-7, Math.min(7, average * 7)) * confidence : 0;
+    return Math.max(-7, Math.min(7, serverBonus + localLearnedActionBonus(context, action)));
   }
 
   // Combat-only loadout planner. It enumerates every supported weapon and
@@ -1382,35 +1411,59 @@
   }
 
   function runCombatLearningSimulation() {
-    combatTestReport('Running 100 isolated rounds…');
-    // Two actions begin equally rated. One consistently succeeds and one fails.
-    // This uses the production reward-to-score formula but keeps all data local.
-    var stats = {
-      attack_good: { attempts: 0, reward_sum: 0 },
-      attack_bad: { attempts: 0, reward_sum: 0 }
-    };
-    function bonus(stat) {
-      if (!stat || stat.attempts < 2) return 0;
-      var confidence = Math.min(1, stat.attempts / 5);
-      var average = stat.reward_sum / Math.max(1, stat.attempts);
-      return Math.max(-7, Math.min(7, average * 7)) * confidence;
+    combatTestReport('Running 100 simulated rounds and saving experience locally…');
+    var contexts = ['low_hp', 'mid_hp', 'high_hp', 'shielded', 'enemy_stunned', 'default'];
+    var candidates = [];
+    // Prefer real game weapon definitions so learned IDs align with combat buttons.
+    if (window.World && World.Weapons) {
+      Object.keys(World.Weapons).forEach(function(name) {
+        var weapon = World.Weapons[name];
+        if (!weapon) return;
+        var damage = weapon.damage === 'stun' ? 0 : Math.max(0, Number(weapon.damage) || 0);
+        var cooldown = Math.max(0.5, Number(weapon.cooldown) || 1);
+        var score = weapon.damage === 'stun' ? 2.2 : damage * 0.8 / cooldown;
+        if (name === 'grenade') score -= 0.65;
+        candidates.push({ name: name, action: 'attack_' + norm(name).replace(/[^a-z0-9_-]/g, '').slice(0, 40), score: score });
+      });
     }
-    var beforeGood = bonus(stats.attack_good), beforeBad = bonus(stats.attack_bad);
-    for (var i = 0; i < 100; i++) {
-      var action = i % 2 === 0 ? 'attack_good' : 'attack_bad';
-      var reward = action === 'attack_good' ? 1 : -1;
-      stats[action].attempts++;
-      stats[action].reward_sum += reward;
+    if (!candidates.length) candidates = [
+      { name: 'training-fast-weapon', action: 'attack_training-fast-weapon', score: 2.0 },
+      { name: 'training-heavy-weapon', action: 'attack_training-heavy-weapon', score: 1.6 },
+      { name: 'training-stun-weapon', action: 'attack_training-stun-weapon', score: 1.8 },
+      { name: 'training-weak-weapon', action: 'attack_training-weak-weapon', score: 0.6 }
+    ];
+    candidates.sort(function(a, b) { return b.score - a.score; });
+    var rounds = 100;
+    for (var i = 0; i < rounds; i++) {
+      var context = contexts[i % contexts.length];
+      var candidate = candidates[(i * 7 + Math.floor(i / contexts.length)) % candidates.length];
+      var rank = candidates.indexOf(candidate);
+      var normalized = candidates.length > 1 ? rank / (candidates.length - 1) : 0;
+      var scenarioAdjustment = ((i * 13) % 17) / 100;
+      var probability = Math.max(0.08, Math.min(0.92, 0.86 - normalized * 0.62 + scenarioAdjustment - 0.08));
+      var roll = ((i * 37 + rank * 19 + context.length * 11) % 100) / 100;
+      writeLocalCombatOutcome(context, candidate.action, roll < probability ? 1 : -1);
     }
-    var afterGood = bonus(stats.attack_good), afterBad = bonus(stats.attack_bad);
-    var passed = afterGood > beforeGood && afterBad < beforeBad && afterGood > afterBad;
+    var policy = readLocalCombatPolicy();
+    var summary = candidates.map(function(candidate) {
+      var totalAttempts = 0, totalReward = 0;
+      contexts.forEach(function(context) {
+        var stat = policy[context] && policy[context][candidate.action];
+        if (stat) {
+          totalAttempts += Number(stat.attempts) || 0;
+          totalReward += Number(stat.reward_sum) || 0;
+        }
+      });
+      return candidate.name + ': ' + totalAttempts + ' local samples, avg reward ' +
+        (totalAttempts ? (totalReward / totalAttempts).toFixed(2) : 'n/a');
+    });
     combatTestReport(
-      (passed ? 'PASS' : 'FAIL') + ' — isolated learning simulation\n' +
-      'Rounds: 100 (50 wins, 50 losses across two actions)\n' +
-      'Previously equal scores: good=' + beforeGood.toFixed(2) + ', bad=' + beforeBad.toFixed(2) + '\n' +
-      'Learned scores: good=' + afterGood.toFixed(2) + ', bad=' + afterBad.toFixed(2) + '\n' +
-      'Expected: repeated wins raise an action; repeated losses lower it.\n' +
-      'Real Supabase data changed: no.'
+      'Saved training experience — ' + rounds + ' simulated rounds\\n' +
+      'Weapon/action candidates: ' + candidates.length + '\\n' +
+      'Contexts trained: ' + contexts.length + '\\n' +
+      summary.join('\\n') + '\\n' +
+      'Local policy now contributes to real combat scoring. Run again for more practice.\\n' +
+      'Supabase production stats changed: no.'
     );
   }
 
