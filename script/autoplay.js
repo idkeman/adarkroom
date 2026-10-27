@@ -909,80 +909,29 @@
         '#attackButtons .button, .weaponButton, #attack_fists, #buttons #attack-disruptor, #buttons #attack-bolas'
       )).filter(ready);
 
-      // Calibrate the enemy's real applied damage once per enemy when it is
-      // demonstrably safe: require enough HP to survive two estimated hits,
-      // no current emergency, and no active shield. Never deliberately wait
-      // for a hit when the estimate says it could be fatal. After calibration,
-      // all weapon choices use the observed damage rather than raw scene damage.
+      // Do not lock the AI into a single weapon class based on whether one
+      // hit is survivable. Every available attack is a candidate every tick:
+      // guns, grenades, bayonet, melee, stun/control and unarmed options.
+      // The scoring below weighs real observed damage, kill probability,
+      // incoming danger, cooldown, and remaining consumables. Since the game
+      // normally accepts one attack action per tick, the AI chains choices by
+      // re-evaluating immediately after each action rather than assuming a
+      // multi-button click is supported by the combat engine.
       var playerStatusNow = window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status');
-      var calibrationSafeHp = Math.max(sceneDamageEstimate * 2 + 1, maxHp * 0.55);
-      if (!calibration.calibrationDone && calibration.sampleCount === 0 &&
-          !calibration.calibrationStartedAt && sceneDamageEstimate > 0 &&
-          hp > calibrationSafeHp && hpRatio > 0.55 && !enemyStunned &&
-          playerStatusNow !== 'shield') {
-        calibration.calibrationStartedAt = Date.now();
-        calibration.lastHp = hp;
-        // Pause attacks briefly so the enemy can land one real hit. This is
-        // skipped entirely in low-health or uncertain-danger situations.
-        return true;
-      }
-      if (!calibration.calibrationDone && calibration.calibrationStartedAt &&
-          Date.now() - calibration.calibrationStartedAt < enemyDelay * 1000 + 500 &&
-          hp === calibration.lastHp) {
-        return true;
-      }
-      if (calibration.calibrationStartedAt && !calibration.calibrationDone) {
-        // No hit landed in the calibration window; stop waiting and fall back
-        // to the conservative estimate so autoplay cannot stall indefinitely.
-        calibration.calibrationStartedAt = 0;
-      }
       var canSurviveOneHit = playerStatusNow === 'shield' || hp > enemyDamage;
       var rifleAttack = attacks.find(function(el) {
         return /attack[_-]rifle$/.test(el.id) || /rifle/i.test(norm(el.innerText || el.textContent));
       });
       var bulletsInOutfit = Number((window.Path && Path.outfit && Path.outfit.bullets) || 0);
-      if (!canSurviveOneHit) {
-        // In a potentially lethal situation, use a grenade if it is loaded and
-        // its damage should finish the enemy before another hit; otherwise use
-        // the rifle. This keeps grenades tactical rather than spending them
-        // automatically on every enemy.
-        var grenadeAttack = attacks.find(function(el) {
-          return /attack[_-]grenade$/.test(el.id) || /grenade/i.test(norm(el.innerText || el.textContent));
-        });
-        var grenadeWeapon = window.World && World.Weapons && World.Weapons.grenade;
-        var grenadesInOutfit = Number((window.Path && Path.outfit && Path.outfit.grenade) || 0);
-        var grenadeDamage = grenadeWeapon && typeof grenadeWeapon.damage === 'number'
-          ? grenadeWeapon.damage : 0;
-        var bayonetAttack = attacks.find(function(el) {
-          return /attack[_-]bayonet$/.test(el.id) || /bayonet/i.test(norm(el.innerText || el.textContent));
-        });
-        var bayonetInOutfit = Number((window.Path && Path.outfit && Path.outfit.bayonet) || 0);
-        var emergencyAttack = grenadeAttack && grenadesInOutfit > 0 &&
-          grenadeDamage >= enemyHp ? grenadeAttack :
-          (rifleAttack && bulletsInOutfit > 0 ? rifleAttack :
-            (bayonetAttack && bayonetInOutfit > 0 ? bayonetAttack : null));
-        if (emergencyAttack && ready(emergencyAttack)) {
-          recordCombatChoice(emergencyAttack, aiContext);
-          if (clickReady(emergencyAttack)) return true;
-        }
-        // Keep emergency choices limited to the gun/grenade options that are
-        // actually stocked; if neither is usable, normal attack ranking below
-        // can still choose the best available fallback.
-        var stockedEmergencyAttacks = attacks.filter(function(el) {
-          return (el === rifleAttack && bulletsInOutfit > 0) ||
-            (el === grenadeAttack && grenadesInOutfit > 0) ||
-            (el === bayonetAttack && bayonetInOutfit > 0);
-        });
-        if (stockedEmergencyAttacks.length) attacks = stockedEmergencyAttacks;
-      }
-      if (canSurviveOneHit) {
-        attacks = attacks.filter(function(el) {
-          var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
-          var weapon = window.World && World.Weapons && World.Weapons[name];
-          return (weapon && (weapon.type === 'melee' || weapon.type === 'unarmed')) ||
-            /bayonet/i.test(name) || el.id === 'attack_fists';
-        });
-      }
+      var grenadeAttack = attacks.find(function(el) {
+        return /attack[_-]grenade$/.test(el.id) || /grenade/i.test(norm(el.innerText || el.textContent));
+      });
+      var grenadeWeapon = window.World && World.Weapons && World.Weapons.grenade;
+      var grenadesInOutfit = Number((window.Path && Path.outfit && Path.outfit.grenade) || 0);
+      var bayonetAttack = attacks.find(function(el) {
+        return /attack[_-]bayonet$/.test(el.id) || /bayonet/i.test(norm(el.innerText || el.textContent));
+      });
+      var bayonetInOutfit = Number((window.Path && Path.outfit && Path.outfit.bayonet) || 0);
       attacks.sort(function(a, b) {
         function attackValue(el) {
           var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
@@ -1014,9 +963,20 @@
             }
             var hitChance = window.World && typeof World.getHitChance === 'function' ? World.getHitChance() : 0.8;
             var usefulDamage = Math.min(enemyHp || baseDamage, baseDamage) * hitChance;
-            // Killing this enemy immediately is worth more than conserving ammo.
-            var killBonus = baseDamage >= enemyHp && enemyHp > 0 ? 5 : 0;
-            score = usefulDamage / cooldown + killBonus;
+            // Spend resources when their tactical value warrants it. A kill
+            // prevents future incoming damage; if the next hit could be fatal,
+            // finishing power is worth far more than conserving ammunition.
+            var killBonus = baseDamage >= enemyHp && enemyHp > 0 ? 12 : 0;
+            var lethalThreatBonus = hp <= enemyDamage && baseDamage >= enemyHp && enemyHp > 0 ? 24 : 0;
+            var burstBonus = (name === 'grenade' || name === 'rifle' ||
+              name === 'bayonet' || /laser rifle|plasma rifle|energy blade/.test(name))
+              ? Math.min(4, Math.max(0, baseDamage - usefulDamage)) * 0.5 : 0;
+            score = usefulDamage / cooldown + killBonus + lethalThreatBonus + burstBonus;
+            if (canSurviveOneHit && (name === 'grenade' || name === 'rifle') && enemyHp > baseDamage) {
+              // Do not hoard consumables indefinitely, but reserve burst
+              // weapons when a cheap reliable option is nearly as effective.
+              score -= name === 'grenade' ? 1.2 : 0.45;
+            }
 
             if (playerStatus === 'boost' || playerStatus === 'energised' || playerStatus === 'venomous') {
               score *= 1.65;
@@ -1032,10 +992,10 @@
             if (remaining <= 0) penalty = 1.8;
             else if (remaining <= price * 2) penalty = 0.9;
             else if (remaining <= price * 4) penalty = 0.35;
-            // Spending the last scarce consumable should require a meaningful
-            // tactical advantage; it should not make an otherwise strong weapon
-            // unusable when that attack can end a dangerous fight.
-            score -= penalty;
+            // Apply only a modest scarcity cost. Strong attacks remain usable
+            // when they can shorten a dangerous fight; the AI must not preserve
+            // every item at the cost of losing the encounter.
+            score -= penalty * (hp <= enemyDamage ? 0.2 : 0.45);
           });
 
           if (name === 'fists' && window.$SM && $SM.hasPerk && $SM.hasPerk('unarmed master')) {
