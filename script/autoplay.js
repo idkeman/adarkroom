@@ -1610,6 +1610,7 @@
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px"><strong style="font-size:16px">Adaptive Autoplay AI & Supabase</strong><button type="button" data-adr-test="close" style="background:#444;color:white;border:0;border-radius:5px;padding:5px 9px;cursor:pointer">Close</button></div>' +
       '<div style="color:#ccc;margin-bottom:10px">AI rule: actions that reveal new content, change inventory/state, unlock something, or advance the story are rewarded. If an action makes no progress for 4.5 seconds, it is penalized and avoided for 30 seconds while the AI tries another action. Decisions, outcomes, journey data, and learned action statistics are stored in Supabase.</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px">' +
+      '<button type="button" data-adr-test="ai-command" style="padding:7px 9px;cursor:pointer">AI command</button>' +
       '<button type="button" data-adr-test="journey" style="padding:7px 9px;cursor:pointer">Run 1 learning journey</button>' +
       '<button type="button" data-adr-test="combat" style="padding:7px 9px;cursor:pointer">Run 100 combat rounds</button>' +
       '<button type="button" data-adr-test="connection" style="padding:7px 9px;cursor:pointer">Check API</button></div>' +
@@ -1617,7 +1618,12 @@
       '<button type="button" data-adr-test="runs">View runs</button><button type="button" data-adr-test="events">View decisions/events</button>' +
       '<button type="button" data-adr-test="actions">View learned action stats</button><button type="button" data-adr-test="paths">View path stats</button>' +
       '<button type="button" data-adr-test="inventory">View inventory snapshots</button><button type="button" data-adr-test="policy">View combat policy</button><button type="button" data-adr-test="refresh">Refresh all outputs</button></div>' +
-      '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#242424;border-radius:6px;padding:10px;min-height:90px;max-height:45vh;overflow:auto">Ready. Run a journey or inspect a Supabase table.</div>' +
+      '<div id="adr-ai-command-box" style="display:none;margin:8px 0;padding:10px;background:#202020;border-radius:7px">' +
+      '<label for="adr-ai-command-input" style="display:block;margin-bottom:5px">Tell the game what you want in plain English</label>' +
+      '<textarea id="adr-ai-command-input" rows="3" placeholder="Examples: build a trading post, then get a compass; explore until you find something new; stop wasting time on the same action." style="box-sizing:border-box;width:100%;resize:vertical;background:#111;color:#fff;border:1px solid #666;border-radius:5px;padding:8px"></textarea>' +
+      '<div style="display:flex;gap:7px;margin-top:7px"><button type="button" data-adr-test="submit-command">Plan & execute</button><button type="button" data-adr-test="inspect-actions">Inspect available actions</button><button type="button" data-adr-test="stop-command">Stop command</button></div>' +
+      '<div style="color:#aaa;font-size:11px;margin-top:6px">Commands use available game controls, observe outcomes, and save the plan/results in Supabase. Destructive save/reset actions are never auto-invoked.</div></div>' +
+      '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#242424;border-radius:6px;padding:10px;min-height:90px;max-height:45vh;overflow:auto">Ready. Open AI command to issue a natural-language instruction or inspect Supabase learning data.</div>' +
       '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcut: Ctrl+Shift+P. Live actions are logged when possible; simulated outcomes are clearly marked.</div>';
     document.body.appendChild(combatTestPanel);
     combatTestPanel.addEventListener('click', function(e) {
@@ -1625,6 +1631,14 @@
       if (!button) return;
       var action = button.getAttribute('data-adr-test');
       if (action === 'close') { combatTestPanel.style.display = 'none'; return; }
+      if (action === 'ai-command') {
+        var commandBox = combatTestPanel.querySelector('#adr-ai-command-box');
+        if (commandBox) commandBox.style.display = commandBox.style.display === 'none' ? 'block' : 'none';
+        return;
+      }
+      if (action === 'submit-command') { submitNaturalLanguageCommand(); return; }
+      if (action === 'inspect-actions') { inspectAvailableGameActions(); return; }
+      if (action === 'stop-command') { stopNaturalLanguageCommand(); return; }
       if (action === 'journey') runJourneyLearningSimulation();
       if (action === 'combat') runCombatLearningSimulation();
       if (action === 'connection') runCombatAPIHealthCheck();
@@ -1632,6 +1646,205 @@
       if (action === 'runs' || action === 'events' || action === 'actions' || action === 'paths' || action === 'inventory' || action === 'policy') showAIDashboard(action);
     });
     return combatTestPanel;
+  }
+
+
+  // Natural-language command system. It builds executable plans from the live
+  // game's controls and exposed APIs, then observes each action before continuing.
+  // Supabase persists the request, resolved plan, and each result.
+  var aiCommandQueue = [];
+  var aiCommandActive = false;
+  var aiCommandRunId = null;
+  var aiCommandTimer = null;
+  var aiCommandIndex = 0;
+  var aiCommandText = '';
+
+  function splitCommandIntoSteps(text) {
+    return String(text || '').replace(/\b(?:and then|then after that|after that|and next)\b/gi, ';')
+      .replace(/[\n]+/g, ';').split(/[;]+/).map(function(part) {
+        return part.trim().replace(/^(?:please|could you|can you|i want you to|i want to|try to|try|then)\s+/i, '');
+      }).filter(Boolean);
+  }
+
+  function liveGameActions() {
+    var roots = [];
+    var panel = window.Engine && Engine.activeModule && Engine.activeModule.panel;
+    if (panel && panel.length && visible(panel[0])) roots.push(panel[0]);
+    roots.push(document);
+    var found = [], seen = [];
+    roots.forEach(function(root) {
+      Array.prototype.slice.call(root.querySelectorAll('.button,button,a.button,[role="button"]')).forEach(function(el) {
+        if (seen.indexOf(el) !== -1 || !ready(el) || el.closest('.menu') ||
+            el.closest('#adr-combat-test-panel') || el.closest('#event')) return;
+        seen.push(el);
+        var label = norm((el.innerText || el.textContent || '') + ' ' + (el.id || '')).trim();
+        if (!label || /restart|delete save|reset game|import save|export save|clear data/.test(label)) return;
+        var base = score(el);
+        found.push({el:el,label:label,key:adaptiveActionKey(el),baseScore:base});
+      });
+    });
+    return found;
+  }
+
+  function inspectAvailableGameActions() {
+    var actions = liveGameActions();
+    var globalFns = [];
+    ['Engine','World','Path','Outside','Room','Outside','Events','$SM'].forEach(function(name) {
+      var obj = window[name];
+      if (!obj) return;
+      Object.keys(obj).forEach(function(key) {
+        try { if (typeof obj[key] === 'function') globalFns.push(name+'.'+key); } catch (e) {}
+      });
+    });
+    combatTestReport('AVAILABLE GAME ACTIONS ('+actions.length+')\n'+actions.map(function(a,i) {
+      return (i+1)+'. '+a.label+' [score '+a.baseScore+']';
+    }).join('\n')+'\n\nEXPOSED GAME API FUNCTIONS ('+globalFns.length+')\n'+globalFns.slice(0,180).join('\n')+
+      (globalFns.length>180?'\n… truncated':'')+
+      '\n\nOnly current, ready UI actions are directly executable. API functions are catalogued for planning/inspection, not blindly invoked.');
+  }
+
+  function resolveNaturalLanguageStep(step, actions) {
+    var q = norm(step);
+    var stripped = q.replace(/\b(the|a|an|please|for me|in the game|as soon as possible|right now|if possible|i want|i need|make sure to|try to|go ahead and)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+    var intent = 'best_progress';
+    if (/\b(stop|pause|cancel|abort)\b/.test(q)) return {kind:'stop',text:step};
+    if (/\b(status|what is happening|what are you doing|show progress)\b/.test(q)) return {kind:'status',text:step};
+    if (/\b(inspect|list|show|what).*\b(actions|buttons|commands|functions)\b/.test(q)) return {kind:'inspect',text:step};
+    if (/\b(explore|expedition|journey|go out|find something new|discover)\b/.test(q)) intent='explore';
+    else if (/\b(story|progress|advance|finish|endgame|ship|launch|lift off)\b/.test(q)) intent='progress';
+    else if (/\b(build|construct|make a|create a)\b/.test(q)) intent='build';
+    else if (/\b(craft|fabricate|produce|manufacture)\b/.test(q)) intent='craft';
+    else if (/\b(gather|collect|farm|harvest|wood|food|meat|resources)\b/.test(q)) intent='gather';
+    else if (/\b(weapon|weaponry|armour|armor|fight|combat|attack|prepare for battle)\b/.test(q)) intent='combat';
+    else if (/\b(trade|buy|purchase|sell|merchant|trading post)\b/.test(q)) intent='trade';
+    else if (/\b(return home|come back|go home|return to village)\b/.test(q)) intent='return';
+    else if (/\b(stoke|fire|keep warm|fuel)\b/.test(q)) intent='fire';
+
+    var explicit = stripped.replace(/\b(build|construct|make|create|craft|fabricate|produce|buy|purchase|gather|collect|find|get|obtain|upgrade|repair|equip|use|go to|visit|return to|explore|investigate|unlock|advance|progress|continue|finish|complete|please|the|a|an|some|me|for)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+    var ranked = actions.map(function(a) {
+      var label = a.label, scoreValue = a.baseScore;
+      var overlap = 0;
+      var words = explicit.split(/\s+/).filter(function(w){return w.length>2;});
+      words.forEach(function(w){ if(label.indexOf(w)!==-1) overlap += Math.min(6,w.length); });
+      if (explicit && (label.indexOf(explicit)!==-1 || explicit.indexOf(label)!==-1)) overlap += 20;
+      if (intent==='explore' && /embark|explore|return home|go out/.test(label)) scoreValue += 55;
+      if (intent==='progress' && /lift off|launch|ship|upgrade engine|power cycle|reinforce hull|continue|investigate|discover|unlock/.test(label)) scoreValue += 70;
+      if (intent==='build' && /build|construct/.test(label)) scoreValue += 45;
+      if (intent==='craft' && /craft|fabricate|make|create/.test(label)) scoreValue += 45;
+      if (intent==='gather' && /gather|collect|hunt|check traps|scavenge/.test(label)) scoreValue += 40;
+      if (intent==='combat' && /weapon|armour|armor|bullets|attack|fight|equip|embark/.test(label)) scoreValue += 35;
+      if (intent==='trade' && /trade|buy|sell|purchase|trading post/.test(label)) scoreValue += 45;
+      if (intent==='return' && /return home|return to village|go home/.test(label)) scoreValue += 100;
+      if (intent==='fire' && /stoke fire|light fire|add fuel/.test(label)) scoreValue += 35;
+      if (/\b(don't|do not|avoid|stop wasting time|instead)\b/.test(q) && /stoke fire|light fire|wait|gather wood/.test(label)) scoreValue -= 60;
+      scoreValue += overlap;
+      return {action:a,score:scoreValue,overlap:overlap};
+    }).sort(function(a,b){return b.score-a.score;});
+    if (!ranked.length || ranked[0].score <= 0) return {kind:'unresolved',text:step,intent:intent};
+    return {kind:'action',text:step,intent:intent,actionKey:ranked[0].action.key,
+      label:ranked[0].action.label,score:ranked[0].score,matched:ranked[0].overlap>0};
+  }
+
+  function submitNaturalLanguageCommand() {
+    var input = combatTestPanel && combatTestPanel.querySelector('#adr-ai-command-input');
+    var text = input ? input.value.trim() : '';
+    if (!text) { combatTestReport('Type an instruction first.'); return; }
+    if (aiCommandActive) { combatTestReport('A command is already running. Stop it before issuing another.'); return; }
+    aiCommandText = text;
+    var actions = liveGameActions();
+    var steps = splitCommandIntoSteps(text);
+    aiCommandQueue = steps.map(function(step){return resolveNaturalLanguageStep(step,actions);});
+    aiCommandIndex = 0;
+    combatTestReport('UNDERSTANDING REQUEST\n'+text+'\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
+      return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (confidence '+p.score+')':'');
+    }).join('\n')+'\n\nStarting plan…');
+    startAIRun('diagnostic',{source:'natural_language_command',request:text,steps:aiCommandQueue}).then(function(runId) {
+      aiCommandRunId = runId;
+      adaptiveLog('natural_language_request','interpret_command',null,{request:text,plan:aiCommandQueue,source:'live_game'});
+      aiCommandActive = true;
+      executeNextNaturalLanguageStep();
+    }).catch(function(error) {
+      combatTestReport('Could not start command telemetry.\n'+(error&&error.message||error));
+    });
+  }
+
+  function executeNextNaturalLanguageStep() {
+    if (!aiCommandActive) return;
+    if (aiCommandIndex >= aiCommandQueue.length) {
+      aiCommandActive = false;
+      finishAIRun(aiCommandRunId,'completed',{request:aiCommandText,steps:aiCommandQueue.length,completed:true});
+      combatTestReport('COMMAND PLAN FINISHED\n'+aiCommandText+'\n\n'+aiCommandQueue.map(function(p,i) {
+        return (i+1)+'. '+p.text+' → '+(p.result || p.label || p.kind);
+      }).join('\n'));
+      return;
+    }
+    var plan = aiCommandQueue[aiCommandIndex];
+    if (plan.kind==='stop') { stopNaturalLanguageCommand(); return; }
+    if (plan.kind==='status') {
+      plan.result='Current game state inspected';
+      adaptiveLog('command_step_result','status',1,{request:plan.text,state:adaptiveSnapshot()});
+      aiCommandIndex++; executeNextNaturalLanguageStep(); return;
+    }
+    if (plan.kind==='inspect') { inspectAvailableGameActions(); plan.result='Action catalog shown'; aiCommandIndex++; executeNextNaturalLanguageStep(); return; }
+    if (plan.kind!=='action') {
+      plan.result='Could not confidently map this sentence to a ready game action; skipped';
+      adaptiveLog('command_step_result','unresolved',-1,{request:plan.text,reason:plan.result});
+      aiCommandIndex++; executeNextNaturalLanguageStep(); return;
+    }
+    var actions = liveGameActions();
+    var selected = actions.find(function(a){return a.key===plan.actionKey;});
+    if (!selected || !ready(selected.el)) {
+      plan.result='Chosen action is no longer available; trying the next step';
+      adaptiveLog('command_step_result',plan.actionKey,-1,{request:plan.text,reason:plan.result});
+      aiCommandIndex++; executeNextNaturalLanguageStep(); return;
+    }
+    plan.before=adaptiveSnapshot();
+    plan.startedAt=Date.now();
+    plan.result='Executing '+selected.label+'; waiting for a game-state change';
+    combatTestReport('EXECUTING COMMAND '+(aiCommandIndex+1)+'/'+aiCommandQueue.length+'\n'+plan.text+'\nSelected game action: '+selected.label+'\nWaiting for observable progress…');
+    if (!clickReady(selected.el)) {
+      plan.result='Action could not be triggered';
+      aiCommandIndex++; executeNextNaturalLanguageStep(); return;
+    }
+    aiCommandTimer=window.setTimeout(function pollCommandOutcome(){
+      if (!aiCommandActive) return;
+      var nowState=adaptiveSnapshot();
+      if (nowState!==plan.before && Date.now()-plan.startedAt>=700) {
+        plan.result='Success: game state/story changed after '+Math.round((Date.now()-plan.startedAt)/1000)+'s';
+        adaptiveLog('command_step_result',plan.actionKey,1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:true});
+        aiCommandIndex++; executeNextNaturalLanguageStep();
+      } else if (Date.now()-plan.startedAt>=4500) {
+        plan.result='Stalled: no observable change; action penalized, trying something else';
+        adaptiveActionCooldowns[plan.actionKey]=Date.now()+30000;
+        adaptiveRecentCounts[plan.actionKey]=(adaptiveRecentCounts[plan.actionKey]||0)+2;
+        adaptiveLog('command_step_result',plan.actionKey,-1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:false,reason:'stall'});
+        // Re-resolve the same user goal against current controls while excluding the stalled action.
+        var alternatives=liveGameActions().filter(function(a){return a.key!==plan.actionKey;});
+        var alternative=resolveNaturalLanguageStep(plan.text,alternatives);
+        if (alternative.kind==='action' && alternative.actionKey!==plan.actionKey) {
+          plan.alternative=alternative.label;
+          plan.actionKey=alternative.actionKey;
+          plan.label=alternative.label;
+          plan.result+='; fallback: '+alternative.label;
+          executeNextNaturalLanguageStep();
+        } else {
+          aiCommandIndex++;
+          executeNextNaturalLanguageStep();
+        }
+      } else {
+        aiCommandTimer=window.setTimeout(pollCommandOutcome,500);
+      }
+    },500);
+  }
+
+  function stopNaturalLanguageCommand() {
+    aiCommandActive=false;
+    if (aiCommandTimer) window.clearTimeout(aiCommandTimer);
+    aiCommandTimer=null;
+    if (aiCommandRunId) finishAIRun(aiCommandRunId,'cancelled',{request:aiCommandText,completed_steps:aiCommandIndex});
+    combatTestReport('Command stopped. No additional actions will be issued.');
   }
 
   function showCombatTestPanel() {
