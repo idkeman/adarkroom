@@ -1337,6 +1337,109 @@
     }
   }
 
+
+  // Fast, isolated combat-learning test bench. Ctrl+Shift+P opens it.
+  // Simulated rounds never write synthetic outcomes to the real learning database.
+  var combatTestPanel = null;
+  function ensureCombatTestPanel() {
+    if (combatTestPanel && combatTestPanel.isConnected) return combatTestPanel;
+    combatTestPanel = document.createElement('section');
+    combatTestPanel.id = 'adr-combat-test-panel';
+    combatTestPanel.style.cssText = 'position:fixed;z-index:2147483000;top:12px;right:12px;width:min(390px,calc(100vw - 24px));max-height:80vh;overflow:auto;background:#171717;color:#f4f4f4;border:1px solid #777;border-radius:10px;padding:14px;box-shadow:0 8px 32px #0009;font:13px/1.45 system-ui,sans-serif;display:none';
+    combatTestPanel.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">' +
+        '<strong style="font-size:16px">Combat AI test bench</strong>' +
+        '<button type="button" data-adr-test="close" style="background:#444;color:white;border:0;border-radius:5px;padding:5px 9px;cursor:pointer">Close</button>' +
+      '</div>' +
+      '<div style="color:#ccc;margin-bottom:10px">Run repeatable checks without changing real combat-learning statistics.</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px">' +
+        '<button type="button" data-adr-test="simulation" style="padding:7px 9px;cursor:pointer">Run 100 simulated rounds</button>' +
+        '<button type="button" data-adr-test="connection" style="padding:7px 9px;cursor:pointer">Check live learning API</button>' +
+      '</div>' +
+      '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;background:#242424;border-radius:6px;padding:10px;min-height:72px">Ready. Choose a test.</div>' +
+      '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcut: Ctrl+Shift+P. Simulation is isolated; API check is read-only.</div>';
+    document.body.appendChild(combatTestPanel);
+    combatTestPanel.addEventListener('click', function(e) {
+      var button = e.target.closest('[data-adr-test]');
+      if (!button) return;
+      var action = button.getAttribute('data-adr-test');
+      if (action === 'close') { combatTestPanel.style.display = 'none'; return; }
+      if (action === 'simulation') runCombatLearningSimulation();
+      if (action === 'connection') runCombatAPIHealthCheck();
+    });
+    return combatTestPanel;
+  }
+
+  function showCombatTestPanel() {
+    var panel = ensureCombatTestPanel();
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  }
+
+  function combatTestReport(message) {
+    var panel = ensureCombatTestPanel();
+    var output = panel.querySelector('#adr-combat-test-results');
+    if (output) output.textContent = message;
+  }
+
+  function runCombatLearningSimulation() {
+    combatTestReport('Running 100 isolated rounds…');
+    // Two actions begin equally rated. One consistently succeeds and one fails.
+    // This uses the production reward-to-score formula but keeps all data local.
+    var stats = {
+      attack_good: { attempts: 0, reward_sum: 0 },
+      attack_bad: { attempts: 0, reward_sum: 0 }
+    };
+    function bonus(stat) {
+      if (!stat || stat.attempts < 2) return 0;
+      var confidence = Math.min(1, stat.attempts / 5);
+      var average = stat.reward_sum / Math.max(1, stat.attempts);
+      return Math.max(-7, Math.min(7, average * 7)) * confidence;
+    }
+    var beforeGood = bonus(stats.attack_good), beforeBad = bonus(stats.attack_bad);
+    for (var i = 0; i < 100; i++) {
+      var action = i % 2 === 0 ? 'attack_good' : 'attack_bad';
+      var reward = action === 'attack_good' ? 1 : -1;
+      stats[action].attempts++;
+      stats[action].reward_sum += reward;
+    }
+    var afterGood = bonus(stats.attack_good), afterBad = bonus(stats.attack_bad);
+    var passed = afterGood > beforeGood && afterBad < beforeBad && afterGood > afterBad;
+    combatTestReport(
+      (passed ? 'PASS' : 'FAIL') + ' — isolated learning simulation\n' +
+      'Rounds: 100 (50 wins, 50 losses across two actions)\n' +
+      'Previously equal scores: good=' + beforeGood.toFixed(2) + ', bad=' + beforeBad.toFixed(2) + '\n' +
+      'Learned scores: good=' + afterGood.toFixed(2) + ', bad=' + afterBad.toFixed(2) + '\n' +
+      'Expected: repeated wins raise an action; repeated losses lower it.\n' +
+      'Real Supabase data changed: no.'
+    );
+  }
+
+  function runCombatAPIHealthCheck() {
+    combatTestReport('Checking Supabase policy endpoint…');
+    var contexts = ['low_hp', 'mid_hp', 'high_hp', 'shielded', 'enemy_stunned', 'default'];
+    var passed = 0, details = [];
+    var chain = Promise.resolve();
+    contexts.forEach(function(context) {
+      chain = chain.then(function() {
+        return requestCombatAI({ op: 'policy', context: context, actions: [] }).then(function(data) {
+          if (!data || !data.stats || typeof data.stats !== 'object') throw new Error('Invalid policy response');
+          passed++;
+          details.push('✓ ' + context + ': ' + Object.keys(data.stats).length + ' learned actions');
+        }).catch(function(error) {
+          details.push('✗ ' + context + ': ' + (error && error.message || 'request failed'));
+        });
+      });
+    });
+    chain.then(function() {
+      combatTestReport(
+        (passed === contexts.length ? 'PASS' : 'FAIL') + ' — live policy API\n' +
+        'Contexts responding: ' + passed + '/' + contexts.length + '\n' +
+        details.join('\n') + '\n' +
+        'This is read-only; it does not create test outcomes.'
+      );
+    });
+  }
+
   // Remember manual location changes so the autoplay loop doesn't snap back
   // to another tab on its next tick.
   document.addEventListener('click', function (event) {
@@ -1345,9 +1448,17 @@
   }, true);
 
   document.addEventListener('keydown', function (event) {
-    if (!(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'p') || event.repeat) return;
-    event.preventDefault();
-    setEnabled(!enabled);
+    if (event.repeat || event.altKey || event.metaKey) return;
+    var key = String(event.key || '').toLowerCase();
+    if (event.ctrlKey && event.shiftKey && key === 'p') {
+      event.preventDefault();
+      showCombatTestPanel();
+      return;
+    }
+    if (event.ctrlKey && !event.shiftKey && key === 'p') {
+      event.preventDefault();
+      setEnabled(!enabled);
+    }
   });
 
 })();
