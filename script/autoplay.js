@@ -353,20 +353,24 @@
   }
 
   function monitorAdaptiveAction() {
-    if (!enabled) return;
+    if (!enabled) return false;
     var state = adaptiveSnapshot();
     if (!adaptiveLastState) adaptiveLastState = state;
     if (state !== adaptiveLastState) {
       adaptiveLastState = state;
       adaptiveLastProgressAt = Date.now();
-      if (adaptivePendingAction && Date.now() - adaptivePendingAction.startedAt >= 700) {
-        settleAdaptiveAction(true,'state_or_story_changed',state);
-      }
     }
     if (adaptivePendingAction) {
       var elapsed = Date.now() - adaptivePendingAction.startedAt;
-      if (elapsed >= 4500) settleAdaptiveAction(false,'no_progress_within_4_5_seconds',state);
-      else return true;
+      // Compare with the action's own baseline, not just the previous tick;
+      // otherwise a quick change would be noticed once but never rewarded.
+      if (state !== adaptivePendingAction.before && elapsed >= 700) {
+        settleAdaptiveAction(true,'state_or_story_changed',state);
+      } else if (elapsed >= 4500) {
+        settleAdaptiveAction(false,'no_progress_within_4_5_seconds',state);
+      } else {
+        return true;
+      }
     }
     return false;
   }
