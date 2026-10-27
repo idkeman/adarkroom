@@ -1779,68 +1779,109 @@
     var text = input ? input.value.trim() : '';
     if (!text) { combatTestReport('Type an instruction first.'); return; }
     if (aiCommandActive) { combatTestReport('A command is already running. Stop it before issuing another.'); return; }
+
     aiCommandText = text;
-    var actions = liveGameActions();
+    aiCommandRunId = null;
+    aiCommandQueue = [];
+    aiCommandIndex = 0;
     aiCommandRepeatGoal = /(?:\b(?:as many|as much)\b.*\b(?:as possible|as you can)\b|\bkeep (?:building|making|crafting|producing|buying)\b|\buntil (?:i|we|you) (?:can't|cannot|can no longer|run out|have no)\b)/i.test(text);
     aiCommandRepeatCount = 0;
+
+    var actions = liveGameActions();
     var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
       return resolveNaturalLanguageStep(step, actions);
     });
-    combatTestReport('Starting local AI. The first run downloads model files; later runs should reuse the browser cache.');
-    var localPlanner = window.WebLLMCommandPlanner;
-    var stopModelStatus = localPlanner && typeof localPlanner.subscribe === 'function' ?
-      localPlanner.subscribe(function(status) { combatTestReport(status); }) : function() {};
-    var planningPromise = localPlanner && typeof localPlanner.plan === 'function' ?
-      localPlanner.plan(text, JSON.parse(adaptiveSnapshot()), actions.map(function(a) {
-        return {key:a.key,label:a.label,score:a.baseScore};
-      })).catch(function(error) {
-        combatTestReport('Local model unavailable; using limited local intent matching.\n' +
-          (error && error.message || error));
-        return {model_available:false, error:String(error && error.message || error)};
-      }) :
-      Promise.resolve({model_available:false, error:'Local WebLLM module is still loading.'});
-    planningPromise.then(function(modelPlan) {
-      stopModelStatus();
-      if (aiCommandRepeatGoal && fallbackSteps.length && fallbackSteps[0].kind === 'action' && fallbackSteps[0].matched) {
-        // Quantity goals must target the named item and repeat it, not blindly accept
-        // a one-shot generic plan from a small language model.
-        aiCommandQueue = fallbackSteps;
-        combatTestReport('Interpreting quantity goal: ' + text + '\\nTarget: ' + (fallbackSteps[0].label || fallbackSteps[0].target || 'matching action') + '\\nI will repeat while the action remains available and the game accepts it.');
-      } else if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
-        aiCommandQueue = modelPlan.steps.map(function(step) {
-          return {kind:'action',text:text,intent:'local_model_planned',actionKey:step.action_key,
-            label:step.label,reason:step.reason,score:100,matched:true};
+    var directControl = fallbackSteps.length && fallbackSteps.every(function(step) {
+      return step.kind === 'stop' || step.kind === 'status' || step.kind === 'inspect';
+    });
+    var directAction = fallbackSteps.length && fallbackSteps.every(function(step) {
+      return step.kind !== 'unresolved' && (step.kind !== 'action' || step.matched || step.score >= 45);
+    });
+
+    function startExecution(plans, plannerName, explanation) {
+      aiCommandQueue = plans || [];
+      aiCommandIndex = 0;
+      if (!aiCommandQueue.length) {
+        aiCommandActive = false;
+        combatTestReport('No executable plan found. Try a specific action or inspect the available actions.');
+        return;
+      }
+      if (aiCommandRepeatGoal && aiCommandQueue[0] && aiCommandQueue[0].kind === 'action') {
+        combatTestReport('Interpreting quantity goal: ' + text + '\nTarget: ' +
+          (aiCommandQueue[0].label || aiCommandQueue[0].target || 'matching action') +
+          '\nI will repeat while the action remains available and the game accepts it.');
+      } else if (explanation) {
+        combatTestReport(explanation);
+      } else {
+        combatTestReport('Executing command using ' + plannerName + '.\n' +
+          aiCommandQueue.map(function(p,i) {
+            return (i+1)+'. '+p.text+' → '+(p.label || p.kind);
+          }).join('\n'));
+      }
+
+      // Telemetry is optional: never let a slow or unavailable network prevent gameplay.
+      aiCommandActive = true;
+      try {
+        var runPromise = startAIRun('diagnostic', {
+          source:'natural_language_command', request:text, planner:plannerName, steps:aiCommandQueue
         });
-        combatTestReport('LOCAL MODEL INTERPRETATION ('+modelPlan.model+')\n'+(modelPlan.explanation||'')+
-          '\n\nEXECUTION PLAN\n'+aiCommandQueue.map(function(p,i) {
+        Promise.resolve(runPromise).then(function(runId) {
+          if (runId) aiCommandRunId = runId;
+          logNaturalLanguageEvent('natural_language_request','interpret_command',null,{
+            request:text, plan:aiCommandQueue, planner:plannerName, source:'live_game'
+          });
+        }).catch(function() {});
+      } catch (e) {}
+      executeNextNaturalLanguageStep();
+    }
+
+    // Exact/ordinary commands should execute immediately. Do not make familiar
+    // commands wait for a ~1 GB model download or a WebGPU initialization.
+    if (directControl || directAction || aiCommandRepeatGoal && fallbackSteps[0] &&
+        fallbackSteps[0].kind === 'action' && fallbackSteps[0].matched) {
+      startExecution(fallbackSteps, 'local_intent_matching',
+        'Matched your command directly to currently available game actions.');
+      return;
+    }
+
+    var localPlanner = window.WebLLMCommandPlanner;
+    if (!localPlanner || typeof localPlanner.plan !== 'function') {
+      startExecution(fallbackSteps, 'local_fallback',
+        'The local language model is not ready; using the built-in command matcher.');
+      return;
+    }
+
+    combatTestReport('Understanding the broader request with the local model. Standard commands do not need to wait for this.');
+    var stopModelStatus = typeof localPlanner.subscribe === 'function' ?
+      localPlanner.subscribe(function(status) {
+        if (!aiCommandActive) combatTestReport(status);
+      }) : function() {};
+    Promise.resolve().then(function() {
+      return localPlanner.plan(text, JSON.parse(adaptiveSnapshot()), actions.map(function(a) {
+        return {key:a.key, label:a.label, score:a.baseScore};
+      }));
+    }).then(function(modelPlan) {
+      stopModelStatus();
+      if (aiCommandActive) return;
+      if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
+        var plans = modelPlan.steps.map(function(step) {
+          return {kind:'action', text:text, intent:'local_model_planned', actionKey:step.action_key,
+            label:step.label, reason:step.reason, score:100, matched:true};
+        });
+        startExecution(plans, modelPlan.model,
+          'LOCAL MODEL INTERPRETATION ('+modelPlan.model+')\n'+(modelPlan.explanation||'')+
+          '\n\nEXECUTION PLAN\n'+plans.map(function(p,i) {
             return (i+1)+'. '+p.label+' — '+(p.reason||'selected for your request');
           }).join('\n'));
       } else {
-        aiCommandQueue = fallbackSteps;
-        combatTestReport('LOCAL INTENT MATCHING (model unavailable)\n'+text+
-          '\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
-            return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (score '+p.score+')':'');
-          }).join('\n')+
-          '\n\nFor broader English, check WebGPU support and reload after the model finishes downloading.');
+        startExecution(fallbackSteps, 'local_fallback',
+          'The local model did not produce a usable plan; using the built-in command matcher.');
       }
-      aiCommandIndex = 0;
-      if (!aiCommandQueue.length) {
-        combatTestReport('No executable plan found. The local model could not safely map this request to a currently ready action. Try a more specific goal or inspect available actions.');
-        return;
-      }
-      return startAIRun('diagnostic',{source:'natural_language_command',request:text,
-        planner:modelPlan && modelPlan.model_available ? modelPlan.model : 'local_fallback',
-        steps:aiCommandQueue}).then(function(runId) {
-        aiCommandRunId = runId;
-        logNaturalLanguageEvent('natural_language_request','interpret_command',null,{
-          request:text,plan:aiCommandQueue,planner:modelPlan && modelPlan.model_available ? modelPlan.model : 'local_fallback',source:'live_game'
-        });
-        aiCommandActive = true;
-        executeNextNaturalLanguageStep();
-      });
     }).catch(function(error) {
       stopModelStatus();
-      combatTestReport('Could not plan or start command telemetry.\n'+(error&&error.message||error));
+      if (aiCommandActive) return;
+      startExecution(fallbackSteps, 'local_fallback',
+        'Local model unavailable; using built-in command matching.\n'+(error && error.message || error));
     });
   }
 
