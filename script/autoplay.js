@@ -915,10 +915,11 @@
         // Keep emergency choices limited to the gun/grenade options that are
         // actually stocked; if neither is usable, normal attack ranking below
         // can still choose the best available fallback.
-        attacks = attacks.filter(function(el) {
+        var stockedEmergencyAttacks = attacks.filter(function(el) {
           return (el === rifleAttack && bulletsInOutfit > 0) ||
             (el === grenadeAttack && grenadesInOutfit > 0);
         });
+        if (stockedEmergencyAttacks.length) attacks = stockedEmergencyAttacks;
       }
       if (canSurviveOneHit) {
         attacks = attacks.filter(function(el) {
