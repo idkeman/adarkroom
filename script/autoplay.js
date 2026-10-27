@@ -1762,31 +1762,38 @@
     var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
       return resolveNaturalLanguageStep(step, actions);
     });
-    combatTestReport('Interpreting your instruction with the Supabase AI planner…');
-    requestCombatAI({
-      op:'interpret', request:text, state:JSON.parse(adaptiveSnapshot()),
-      actions:actions.map(function(a){return {key:a.key,label:a.label,score:a.baseScore};})
-    }).catch(function(){return {model_available:false};}).then(function(modelPlan) {
+    combatTestReport('Preparing local language model… first use may download model files.');
+    var localPlanner = window.WebLLMCommandPlanner;
+    var planningPromise = localPlanner && typeof localPlanner.plan === 'function' ?
+      localPlanner.plan(text, JSON.parse(adaptiveSnapshot()), actions.map(function(a) {
+        return {key:a.key,label:a.label,score:a.baseScore};
+      })).catch(function(error) {
+        combatTestReport('Local model unavailable; using limited local intent matching.\\n' +
+          (error && error.message || error));
+        return {model_available:false, error:String(error && error.message || error)};
+      }) :
+      Promise.resolve({model_available:false, error:'Local WebLLM module is still loading.'});
+    planningPromise.then(function(modelPlan) {
       if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
         aiCommandQueue = modelPlan.steps.map(function(step) {
-          return {kind:'action',text:text, intent:'model_planned', actionKey:step.action_key,
-            label:step.label, reason:step.reason, score:100, matched:true};
+          return {kind:'action',text:text,intent:'local_model_planned',actionKey:step.action_key,
+            label:step.label,reason:step.reason,score:100,matched:true};
         });
-        combatTestReport('AI INTERPRETATION ('+modelPlan.model+')\n'+(modelPlan.explanation||'')+
-          '\n\nEXECUTION PLAN\n'+aiCommandQueue.map(function(p,i) {
+        combatTestReport('LOCAL MODEL INTERPRETATION ('+modelPlan.model+')\\n'+(modelPlan.explanation||'')+
+          '\\n\\nEXECUTION PLAN\\n'+aiCommandQueue.map(function(p,i) {
             return (i+1)+'. '+p.label+' — '+(p.reason||'selected for your request');
-          }).join('\n'));
+          }).join('\\n'));
       } else {
         aiCommandQueue = fallbackSteps;
-        combatTestReport('LOCAL INTENT RESOLVER (language model not configured or unavailable)\n'+text+
-          '\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
+        combatTestReport('LOCAL INTENT MATCHING (model unavailable)\\n'+text+
+          '\\n\\nPLAN\\n'+aiCommandQueue.map(function(p,i) {
             return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (score '+p.score+')':'');
-          }).join('\n')+
-          '\n\nFor broad, open-ended English, configure OPENAI_API_KEY as a Supabase Edge Function secret. The local resolver remains available without it.');
+          }).join('\\n')+
+          '\\n\\nFor broader English, check WebGPU support and reload after the model finishes downloading.');
       }
       aiCommandIndex = 0;
       if (!aiCommandQueue.length) {
-        combatTestReport('No executable plan found. Try a more specific goal or inspect available actions.');
+        combatTestReport('No executable plan found. The local model could not safely map this request to a currently ready action. Try a more specific goal or inspect available actions.');
         return;
       }
       return startAIRun('diagnostic',{source:'natural_language_command',request:text,
@@ -1799,7 +1806,7 @@
         aiCommandActive = true;
         executeNextNaturalLanguageStep();
       });
-    }).catch(function(error) {
+.catch(function(error) {
       combatTestReport('Could not plan or start command telemetry.\n'+(error&&error.message||error));
     });
   }
