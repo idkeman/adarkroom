@@ -881,6 +881,30 @@
       var attacks = Array.prototype.slice.call(panel.querySelectorAll(
         '#attackButtons .button, .weaponButton, #attack_fists, #buttons #attack-disruptor, #buttons #attack-bolas'
       )).filter(ready);
+
+      // Tactical ammunition rule: estimate whether the next enemy hit is
+      // survivable. If HP safely exceeds one hit (or a shield blocks it), use
+      // melee/unarmed attacks and preserve bullets. If a hit would kill, spend
+      // bullets through the rifle as the emergency option; do not waste other
+      // consumable weapons in that emergency branch.
+      var playerStatusNow = window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status');
+      var canSurviveOneHit = playerStatusNow === 'shield' || hp > enemyDamage;
+      var rifleAttack = attacks.find(function(el) {
+        return /attack[_-]rifle$/.test(el.id) || /rifle/i.test(norm(el.innerText || el.textContent));
+      });
+      if (!canSurviveOneHit && rifleAttack && ready(rifleAttack) &&
+          Number((window.Path && Path.outfit && Path.outfit.bullets) || 0) > 0) {
+        recordCombatChoice(rifleAttack, aiContext);
+        if (clickReady(rifleAttack)) return true;
+      }
+      if (canSurviveOneHit) {
+        attacks = attacks.filter(function(el) {
+          var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
+          var weapon = window.World && World.Weapons && World.Weapons[name];
+          return weapon && (weapon.type === 'melee' || weapon.type === 'unarmed') ||
+            el.id === 'attack_fists';
+        });
+      }
       attacks.sort(function(a, b) {
         function attackValue(el) {
           var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
