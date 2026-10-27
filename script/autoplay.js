@@ -1101,6 +1101,7 @@
   // manual control over the game's other location tabs.
   var activeJourney = null;
   var lastObservedModule = null;
+  var journeyEmbarkPending = false;
   var journeyDirections = [
     { x: 1, y: 0 }, { x: 0, y: -1 }, { x: -1, y: 0 }, { x: 0, y: 1 }
   ];
@@ -1632,22 +1633,44 @@
       if (!window.World || !window.Path || !window.$SM) return false;
       if (!Path.outfit) Path.outfit = $SM.get('outfit') || {};
       if (!activeJourney) {
-        // No cured meat means there is no safe trip to launch yet.
-        if (storeCount('cured meat') < 1) return false;
-        if (!prepareJourneySupplies()) return false;
+        // Keep trying to embark whenever the game permits it. First optimize
+        // the loadout, but do not let a failed optimization attempt block an
+        // otherwise legal trip with food already equipped.
+        if (journeyEmbarkPending) return true;
+        if (storeCount('cured meat') > 0) prepareJourneySupplies();
         Path.updateOutfitting();
         var embark = document.getElementById('embarkButton');
-        if (embark && ready(embark) &&
-            Number(Path.outfit['cured meat']) > 0 && Date.now() - lastAction >= 200) {
-          startAIRun('live_journey', { source: 'live_game', start_position: World.curPos || null,
-            inventory: combatInventory(), note: 'Live player journey; actions recorded as observed' }).then(function(runId) {
-            if (runId) window.__adrLiveJourneyRunId = runId;
-            embark.click();
-            sendAIEventBatch([{run_id:runId || null,event_type:'journey_started',context:'default',action:'embark',reward:0,
-              payload:{source:'live_journey',position:World.curPos || null,inventory:combatInventory(),simulation:false}}]).catch(function(){});
-          }).catch(function() { embark.click(); });
-          lastAction = Date.now();
-          return true;
+        var equippedFood = Number(Path.outfit['cured meat']) || 0;
+        var storedFood = storeCount('cured meat');
+        if (embark && ready(embark) && (equippedFood > 0 || storedFood > 0) &&
+            Date.now() - lastAction >= 200) {
+          if (equippedFood <= 0 && storedFood > 0) {
+            Path.outfit['cured meat'] = 1;
+            Path.updateOutfitting();
+            equippedFood = Number(Path.outfit['cured meat']) || 0;
+          }
+          if (equippedFood > 0 && ready(embark)) {
+            journeyEmbarkPending = true;
+            lastAction = Date.now();
+            startAIRun('live_journey', { source: 'live_game', start_position: World.curPos || null,
+              inventory: combatInventory(), note: 'Live player journey; embark as soon as the game allows it' }).then(function(runId) {
+              if (runId) window.__adrLiveJourneyRunId = runId;
+              // Re-check the live button after the async run-start request.
+              var liveEmbark = document.getElementById('embarkButton');
+              if (liveEmbark && ready(liveEmbark) && Number(Path.outfit['cured meat']) > 0) {
+                liveEmbark.click();
+                sendAIEventBatch([{run_id:runId || null,event_type:'journey_started',context:'default',action:'embark',reward:0,
+                  payload:{source:'live_journey',position:World.curPos || null,inventory:combatInventory(),simulation:false}}]).catch(function(){});
+              } else if (runId) {
+                finishAIRun(runId, 'cancelled', { source: 'live_journey', reason: 'embark_unavailable' }).catch(function(){});
+                if (window.__adrLiveJourneyRunId === runId) window.__adrLiveJourneyRunId = null;
+              }
+            }).catch(function() {
+              var liveEmbark = document.getElementById('embarkButton');
+              if (liveEmbark && ready(liveEmbark) && Number(Path.outfit['cured meat']) > 0) liveEmbark.click();
+            }).then(function() { journeyEmbarkPending = false; });
+            return true;
+          }
         }
         return false;
       }
