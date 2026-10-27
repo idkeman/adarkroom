@@ -1747,7 +1747,7 @@
         return {action:a,score:hit * 30 + (actionType ? 15 : 0),overlap:hit * 10};
       }).filter(function(item){return item.score >= 45;}).sort(function(a,b){return b.score-a.score;});
       if (targeted.length) return {kind:'action',text:step,intent:intent,actionKey:targeted[0].action.key,
-        label:targeted[0].action.label,score:targeted[0].score,matched:true,target:target,repeat:/\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/.test(q)};
+        label:targeted[0].action.label,score:targeted[0].score,matched:true,target:target,repeat:/(?:\b(?:as many|as much)\b.*\b(?:as possible|as you can)\b|\bkeep (?:building|making|crafting|producing|buying)\b|\buntil (?:i|we|you) (?:can't|cannot|can no longer|run out|have no)\b)/.test(q)};
     }
     var ranked = actions.map(function(a) {
       var label = a.label, scoreValue = a.baseScore;
@@ -1771,7 +1771,7 @@
     if (!ranked.length || ranked[0].score <= 0) return {kind:'unresolved',text:step,intent:intent};
     return {kind:'action',text:step,intent:intent,actionKey:ranked[0].action.key,
       label:ranked[0].action.label,score:ranked[0].score,matched:ranked[0].overlap>0,
-      repeat:/\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/.test(q)};
+      repeat:/(?:\b(?:as many|as much)\b.*\b(?:as possible|as you can)\b|\bkeep (?:building|making|crafting|producing|buying)\b|\buntil (?:i|we|you) (?:can't|cannot|can no longer|run out|have no)\b)/.test(q)};
   }
 
   function submitNaturalLanguageCommand() {
@@ -1781,7 +1781,7 @@
     if (aiCommandActive) { combatTestReport('A command is already running. Stop it before issuing another.'); return; }
     aiCommandText = text;
     var actions = liveGameActions();
-    aiCommandRepeatGoal = /\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/i.test(text);
+    aiCommandRepeatGoal = /(?:\b(?:as many|as much)\b.*\b(?:as possible|as you can)\b|\bkeep (?:building|making|crafting|producing|buying)\b|\buntil (?:i|we|you) (?:can't|cannot|can no longer|run out|have no)\b)/i.test(text);
     aiCommandRepeatCount = 0;
     var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
       return resolveNaturalLanguageStep(step, actions);
