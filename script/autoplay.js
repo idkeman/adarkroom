@@ -1606,7 +1606,7 @@
         var weapon = World.Weapons[name]; if (!weapon) return;
         var damage = weapon.damage === 'stun' ? 0 : Math.max(0, Number(weapon.damage) || 0);
         var cooldown = Math.max(0.5, Number(weapon.cooldown) || 1);
-        candidates.push({name:name,action:'attack_'+norm(name).replace(/[^a-z0-9_-]/g,'').slice(0,40),score:weapon.damage==='stun'?2.2:damage*0.8/cooldown});
+        candidates.push({name:name,action:'attack_'+norm(name).replace(/\\s+/g,'-').replace(/[^a-z0-9_-]/g,'').slice(0,40),score:weapon.damage==='stun'?2.2:damage*0.8/cooldown});
       });
       if (!candidates.length) candidates = [{name:'training-fast-weapon',action:'attack_training-fast-weapon',score:2},{name:'training-heavy-weapon',action:'attack_training-heavy-weapon',score:1.6},{name:'training-stun-weapon',action:'attack_training-stun-weapon',score:1.8},{name:'training-weak-weapon',action:'attack_training-weak-weapon',score:0.6}];
       candidates.sort(function(a,b){return b.score-a.score;});
