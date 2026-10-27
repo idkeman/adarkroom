@@ -905,9 +905,14 @@
         var grenadesInOutfit = Number((window.Path && Path.outfit && Path.outfit.grenade) || 0);
         var grenadeDamage = grenadeWeapon && typeof grenadeWeapon.damage === 'number'
           ? grenadeWeapon.damage : 0;
+        var bayonetAttack = attacks.find(function(el) {
+          return /attack[_-]bayonet$/.test(el.id) || /bayonet/i.test(norm(el.innerText || el.textContent));
+        });
+        var bayonetInOutfit = Number((window.Path && Path.outfit && Path.outfit.bayonet) || 0);
         var emergencyAttack = grenadeAttack && grenadesInOutfit > 0 &&
           grenadeDamage >= enemyHp ? grenadeAttack :
-          (rifleAttack && bulletsInOutfit > 0 ? rifleAttack : null);
+          (rifleAttack && bulletsInOutfit > 0 ? rifleAttack :
+            (bayonetAttack && bayonetInOutfit > 0 ? bayonetAttack : null));
         if (emergencyAttack && ready(emergencyAttack)) {
           recordCombatChoice(emergencyAttack, aiContext);
           if (clickReady(emergencyAttack)) return true;
@@ -917,7 +922,8 @@
         // can still choose the best available fallback.
         var stockedEmergencyAttacks = attacks.filter(function(el) {
           return (el === rifleAttack && bulletsInOutfit > 0) ||
-            (el === grenadeAttack && grenadesInOutfit > 0);
+            (el === grenadeAttack && grenadesInOutfit > 0) ||
+            (el === bayonetAttack && bayonetInOutfit > 0);
         });
         if (stockedEmergencyAttacks.length) attacks = stockedEmergencyAttacks;
       }
@@ -926,7 +932,7 @@
           var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
           var weapon = window.World && World.Weapons && World.Weapons[name];
           return (weapon && (weapon.type === 'melee' || weapon.type === 'unarmed')) ||
-            el.id === 'attack_fists';
+            /bayonet/i.test(name) || el.id === 'attack_fists';
         });
       }
       attacks.sort(function(a, b) {
@@ -1256,6 +1262,14 @@
       });
     }
     if (meleeName) outfit[meleeName] = 1;
+
+    // A bayonet is useful even when a stronger melee weapon is also packed:
+    // it can be selected as a separate combat option. Fit it only if the
+    // remaining capacity permits it, without displacing the gun or bullets.
+    if (available('bayonet') > 0) {
+      var bayonetWeight = Math.max(0.01, Number(Path.getWeight('bayonet')) || 1);
+      if (outfitWeight(outfit) + bayonetWeight <= capacity + 0.001) outfit.bayonet = 1;
+    }
 
     // Carry grenades when owned, after reserving the primary gun, ammunition,
     // and melee fallback. Prefer up to two; capacity and food planning below
