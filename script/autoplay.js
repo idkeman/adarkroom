@@ -1801,7 +1801,12 @@
       Promise.resolve({model_available:false, error:'Local WebLLM module is still loading.'});
     planningPromise.then(function(modelPlan) {
       stopModelStatus();
-      if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
+      if (aiCommandRepeatGoal && fallbackSteps.length && fallbackSteps[0].kind === 'action' && fallbackSteps[0].matched) {
+        // Quantity goals must target the named item and repeat it, not blindly accept
+        // a one-shot generic plan from a small language model.
+        aiCommandQueue = fallbackSteps;
+        combatTestReport('Interpreting quantity goal: ' + text + '\\nTarget: ' + (fallbackSteps[0].label || fallbackSteps[0].target || 'matching action') + '\\nI will repeat while the action remains available and the game accepts it.');
+      } else if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
         aiCommandQueue = modelPlan.steps.map(function(step) {
           return {kind:'action',text:text,intent:'local_model_planned',actionKey:step.action_key,
             label:step.label,reason:step.reason,score:100,matched:true};
@@ -1883,6 +1888,29 @@
       if (nowState!==plan.before && Date.now()-plan.startedAt>=700) {
         plan.result='Success: game state/story changed after '+Math.round((Date.now()-plan.startedAt)/1000)+'s';
         logNaturalLanguageEvent('command_step_result',plan.actionKey,1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:true});
+        if (aiCommandRepeatGoal && aiCommandRepeatCount < 100) {
+          var repeatActions = liveGameActions();
+          var nextRepeat = resolveNaturalLanguageStep(aiCommandText, repeatActions);
+          var requestedTarget = norm(plan.target || (plan.text.match(/\\b(?:traps?|huts?|carts?|lodges?|trading posts?|workshops?|tanneries|smokehouses|steelworks|armouries)\\b/i) || [])[0] || '');
+          var nextLabel = norm(nextRepeat.label || '');
+          var targetStillAvailable = nextRepeat.kind === 'action' &&
+            (requestedTarget ? nextLabel.indexOf(requestedTarget.replace(/s$/, '')) !== -1 || requestedTarget === 'traps' && /\\btrap\\b/.test(nextLabel) :
+              nextRepeat.actionKey === plan.actionKey);
+          if (targetStillAvailable) {
+            aiCommandRepeatCount++;
+            nextRepeat.repeat = true;
+            nextRepeat.target = plan.target || requestedTarget;
+            aiCommandQueue = [nextRepeat];
+            aiCommandIndex = 0;
+            combatTestReport('GOAL IN PROGRESS ('+aiCommandRepeatCount+' completed)\\n'+aiCommandText+'\\nBuilt/used: '+selected.label+'\\nRepeating while affordable and available…');
+            executeNextNaturalLanguageStep();
+            return;
+          }
+          aiCommandActive = false;
+          finishAIRun(aiCommandRunId,'completed',{request:aiCommandText,repeat_count:aiCommandRepeatCount+1,stopped:'target action no longer available'});
+          combatTestReport('GOAL FINISHED\\n'+aiCommandText+'\\nCompleted '+(aiCommandRepeatCount+1)+' successful action(s). The target action is no longer available or affordable.');
+          return;
+        }
         aiCommandIndex++; executeNextNaturalLanguageStep();
       } else if (Date.now()-plan.startedAt>=4500) {
         plan.result='Stalled: no observable change; action penalized, trying something else';
