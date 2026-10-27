@@ -1077,26 +1077,65 @@
         !window.Outside || !window.$SM || !Outside._INCOME) return false;
     var population = Number($SM.get('game.population')) || 0;
     var workers = $SM.get('game.workers') || {};
-    var free = typeof Outside.getNumGatherers === 'function' ? Outside.getNumGatherers() : 0;
-    if (free <= 2) return false;
     var stores = $SM.get('stores') || {};
+    var buildings = $SM.get('game.buildings') || {};
+    var free = typeof Outside.getNumGatherers === 'function' ? Outside.getNumGatherers() : 0;
+    function count(name) { return Math.max(0, Number(stores[name]) || 0); }
+    function workerCount(name) { return Math.max(0, Number(workers[name]) || 0); }
+    function changeWorker(name, direction) {
+      var row = document.getElementById('workers_row_' + name.replace(/ /g, '-'));
+      if (!row) return false;
+      var button = row.querySelector(direction > 0 ? '.upBtn:not(.disabled)' : '.dnBtn:not(.disabled)');
+      return !!button && clickReady(button);
+    }
+
+    // Charcutiers consume five raw meat and five wood per production tick.
+    // Never leave them running when either input is nearly depleted, and do
+    // not assign one unless the smokehouse exists and there is a real surplus.
+    var charcutiers = workerCount('charcutier');
+    var meat = count('meat'), wood = count('wood');
+    if (charcutiers > 0 && (Number(buildings.smokehouse) || 0) < 1) {
+      return changeWorker('charcutier', -1);
+    }
+    if (charcutiers > 0 && (meat < 8 || wood < 8)) {
+      return changeWorker('charcutier', -1);
+    }
+    if (charcutiers === 0 && (Number(buildings.smokehouse) || 0) > 0 &&
+        population >= 9 && meat >= 60 && wood >= 60 && free > 1) {
+      return changeWorker('charcutier', 1);
+    }
+
+    // Preserve a baseline supply chain before adding jobs that consume stock.
+    // One hunter yields only 0.5 meat per 10 seconds; cured-meat production
+    // consumes 5 meat per 10 seconds, so avoid scaling charcutiers blindly.
     var plans = [
       { key: 'hunter', count: population >= 4 ? 1 : 0 },
-      { key: 'trapper', count: population >= 7 && (Number(stores.meat) || 0) >= 8 ? 1 : 0 },
-      { key: 'tanner', count: population >= 8 && (Number(stores.fur) || 0) >= 8 ? 1 : 0 },
-      { key: 'charcutier', count: population >= 9 && (Number(stores.meat) || 0) >= 12 && (Number(stores.wood) || 0) >= 12 ? 1 : 0 },
-      { key: 'iron miner', count: population >= 10 && (Number(stores['cured meat']) || 0) >= 8 ? 1 : 0 },
-      { key: 'coal miner', count: population >= 12 && (Number(stores['cured meat']) || 0) >= 12 ? 1 : 0 },
-      { key: 'sulphur miner', count: population >= 14 && (Number(stores['cured meat']) || 0) >= 16 ? 1 : 0 },
-      { key: 'steelworker', count: population >= 16 && (Number(stores.iron) || 0) >= 4 && (Number(stores.coal) || 0) >= 4 ? 1 : 0 },
-      { key: 'armourer', count: population >= 18 && (Number(stores.steel) || 0) >= 4 && (Number(stores.sulphur) || 0) >= 4 ? 1 : 0 }
+      { key: 'trapper', count: population >= 7 && meat >= 20 && count('bait') < 10 ? 1 : 0 },
+      { key: 'tanner', count: population >= 8 && count('fur') >= 8 ? 1 : 0 },
+      { key: 'iron miner', count: population >= 10 && count('cured meat') >= 8 ? 1 : 0 },
+      { key: 'coal miner', count: population >= 12 && count('cured meat') >= 12 ? 1 : 0 },
+      { key: 'sulphur miner', count: population >= 14 && count('cured meat') >= 16 ? 1 : 0 },
+      { key: 'steelworker', count: population >= 16 && count('iron') >= 4 && count('coal') >= 4 ? 1 : 0 },
+      { key: 'armourer', count: population >= 18 && count('steel') >= 4 && count('sulphur') >= 4 ? 1 : 0 }
     ];
+    // Release input-consuming workers if their production chain is starving.
     for (var i = 0; i < plans.length; i++) {
       var plan = plans[i];
-      if (plan.count > 0 && (Number(workers[plan.key]) || 0) < plan.count) {
-        var row = document.getElementById('workers_row_' + plan.key.replace(/ /g, '-'));
-        var up = row && row.querySelector('.upBtn:not(.disabled)');
-        if (up && clickReady(up)) return true;
+      if (workerCount(plan.key) > plan.count) {
+        if ((plan.key === 'iron miner' && count('cured meat') < 4) ||
+            (plan.key === 'coal miner' && count('cured meat') < 6) ||
+            (plan.key === 'sulphur miner' && count('cured meat') < 8) ||
+            (plan.key === 'steelworker' && (count('iron') < 2 || count('coal') < 2)) ||
+            (plan.key === 'armourer' && (count('steel') < 2 || count('sulphur') < 2))) {
+          return changeWorker(plan.key, -1);
+        }
+      }
+    }
+    if (free <= 1) return false;
+    for (var j = 0; j < plans.length; j++) {
+      var next = plans[j];
+      if (next.count > 0 && workerCount(next.key) < next.count) {
+        return changeWorker(next.key, 1);
       }
     }
     return false;
