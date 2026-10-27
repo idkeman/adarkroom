@@ -1202,7 +1202,7 @@
       var preferredAmmoWeight = 0;
       Object.keys(preferred.weapon.cost || {}).forEach(function(resource) {
         var available = Math.floor(Number(stores[resource]) || 0);
-        var count = Math.min(8, available);
+        var count = Math.min(4, available);
         if (count > 0) {
           preferredAmmo[resource] = count;
           preferredAmmoWeight += count * Path.getWeight(resource);
@@ -1221,6 +1221,31 @@
           outfit[name] = Math.min(Number(stores[name]) || 0, weapon.ammo[name]);
         });
       }
+    }
+
+    // Combat loadouts need a dependable fallback: never leave a ranged-only
+    // primary as the sole weapon when a melee weapon is available. Prefer the
+    // strongest owned sword, then a bone spear, and reserve bag space for it
+    // before adding surplus food or optional supplies.
+    var primaryWeaponName = weapon && weapon.name;
+    var primaryWeapon = primaryWeaponName && World.Weapons[primaryWeaponName];
+    var primaryIsRanged = primaryWeapon && primaryWeapon.type === 'ranged';
+    if (primaryIsRanged) {
+      var meleeBackups = ['steel sword', 'iron sword', 'energy blade', 'bayonet', 'bone spear'];
+      var backupName = meleeBackups.find(function (name) {
+        return (Number(stores[name]) || 0) > 0 && World.Weapons[name] &&
+          outfitWeight(outfit) + Path.getWeight(name) <= capacity;
+      });
+      if (backupName) outfit[backupName] = 1;
+    }
+
+    // If a rifle is carried, bullets are a combat essential, not optional cargo.
+    // Keep up to four shots (or all available) before calculating the food load.
+    if (Number(outfit.rifle) > 0) {
+      var bulletsAvailable = Math.floor(Number(stores.bullets) || 0);
+      var bulletRoom = Math.max(0, Math.floor((capacity - outfitWeight(outfit)) / Path.getWeight('bullets')));
+      var bulletTarget = Math.min(4, bulletsAvailable, bulletRoom + (Number(outfit.bullets) || 0));
+      if (bulletTarget > (Number(outfit.bullets) || 0)) outfit.bullets = bulletTarget;
     }
 
     var foodMoves = Math.max(1, Number(World.MOVES_PER_FOOD) || 2);
