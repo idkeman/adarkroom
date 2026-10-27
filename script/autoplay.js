@@ -1759,19 +1759,48 @@
     if (aiCommandActive) { combatTestReport('A command is already running. Stop it before issuing another.'); return; }
     aiCommandText = text;
     var actions = liveGameActions();
-    var steps = splitCommandIntoSteps(text);
-    aiCommandQueue = steps.map(function(step){return resolveNaturalLanguageStep(step,actions);});
-    aiCommandIndex = 0;
-    combatTestReport('UNDERSTANDING REQUEST\n'+text+'\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
-      return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (confidence '+p.score+')':'');
-    }).join('\n')+'\n\nStarting plan…');
-    startAIRun('diagnostic',{source:'natural_language_command',request:text,steps:aiCommandQueue}).then(function(runId) {
-      aiCommandRunId = runId;
-      logNaturalLanguageEvent('natural_language_request','interpret_command',null,{request:text,plan:aiCommandQueue,source:'live_game'});
-      aiCommandActive = true;
-      executeNextNaturalLanguageStep();
+    var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
+      return resolveNaturalLanguageStep(step, actions);
+    });
+    combatTestReport('Interpreting your instruction with the Supabase AI planner…');
+    requestCombatAI({
+      op:'interpret', request:text, state:JSON.parse(adaptiveSnapshot()),
+      actions:actions.map(function(a){return {key:a.key,label:a.label,score:a.baseScore};})
+    }).catch(function(){return {model_available:false};}).then(function(modelPlan) {
+      if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
+        aiCommandQueue = modelPlan.steps.map(function(step) {
+          return {kind:'action',text:text, intent:'model_planned', actionKey:step.action_key,
+            label:step.label, reason:step.reason, score:100, matched:true};
+        });
+        combatTestReport('AI INTERPRETATION ('+modelPlan.model+')\n'+(modelPlan.explanation||'')+
+          '\n\nEXECUTION PLAN\n'+aiCommandQueue.map(function(p,i) {
+            return (i+1)+'. '+p.label+' — '+(p.reason||'selected for your request');
+          }).join('\n'));
+      } else {
+        aiCommandQueue = fallbackSteps;
+        combatTestReport('LOCAL INTENT RESOLVER (language model not configured or unavailable)\n'+text+
+          '\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
+            return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (score '+p.score+')':'');
+          }).join('\n')+
+          '\n\nFor broad, open-ended English, configure OPENAI_API_KEY as a Supabase Edge Function secret. The local resolver remains available without it.');
+      }
+      aiCommandIndex = 0;
+      if (!aiCommandQueue.length) {
+        combatTestReport('No executable plan found. Try a more specific goal or inspect available actions.');
+        return;
+      }
+      return startAIRun('diagnostic',{source:'natural_language_command',request:text,
+        planner:modelPlan && modelPlan.model_available ? modelPlan.model : 'local_fallback',
+        steps:aiCommandQueue}).then(function(runId) {
+        aiCommandRunId = runId;
+        logNaturalLanguageEvent('natural_language_request','interpret_command',null,{
+          request:text,plan:aiCommandQueue,planner:modelPlan && modelPlan.model_available ? modelPlan.model : 'local_fallback',source:'live_game'
+        });
+        aiCommandActive = true;
+        executeNextNaturalLanguageStep();
+      });
     }).catch(function(error) {
-      combatTestReport('Could not start command telemetry.\n'+(error&&error.message||error));
+      combatTestReport('Could not plan or start command telemetry.\n'+(error&&error.message||error));
     });
   }
 
