@@ -10,11 +10,19 @@
   function setEnabled(value) {
     enabled = value;
     if (enabled) {
+      adaptiveLastState = adaptiveSnapshot();
+      adaptiveLastProgressAt = Date.now();
+      beginAdaptiveRun();
+      loadCombatPolicy('default', true);
       if (!timer) timer = window.setInterval(tick, 250);
       tick();
-    } else if (timer) {
-      window.clearInterval(timer);
-      timer = null;
+    } else {
+      finishAdaptiveRun('completed');
+      settleAdaptiveAction(false,'autoplay_disabled',adaptiveSnapshot());
+      if (timer) {
+        window.clearInterval(timer);
+        timer = null;
+      }
     }
   }
 
@@ -196,6 +204,7 @@
 
   function clickReady(el) {
     if (!ready(el) || Date.now() - lastAction < 200) return false;
+    if (typeof beginAdaptiveAction === 'function' && !beginAdaptiveAction(el)) return false;
     el.click();
     lastAction = Date.now();
     return true;
@@ -249,6 +258,149 @@
   function sendAIEventBatch(events) {
     if (!events || !events.length) return Promise.resolve({ inserted: 0 });
     return sendAITelemetry({ op: 'event_batch', events: events });
+  }
+
+
+  // General autoplay AI: reward state/story progress, punish stalled actions,
+  // and persist every decision/outcome through Supabase. The game remains the
+  // source of truth for costs, cooldowns, and whether an action is legal.
+  var adaptivePendingAction = null;
+  var adaptiveActionCooldowns = {};
+  var adaptiveRecentCounts = {};
+  var adaptiveRunId = null;
+  var adaptiveRunStartPending = false;
+  var adaptiveLastState = '';
+  var adaptiveLastProgressAt = Date.now();
+  var adaptiveLastDecisionAt = 0;
+  var adaptiveCompleted = 0;
+  var adaptiveStalled = 0;
+
+  function adaptiveActionKey(el) {
+    var raw = norm((el && (el.id || el.getAttribute('buildThing') || el.getAttribute('fabricateThing') ||
+      el.innerText || el.textContent)) || 'unknown-action');
+    raw = raw.replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').replace(/-+/g, '-');
+    return (raw || 'unknown-action').slice(0, 48);
+  }
+
+  function adaptiveSnapshot() {
+    var moduleName = window.Engine && Engine.activeModule ?
+      (Engine.activeModule.name || Engine.activeModule.title || Engine.activeModule.constructor && Engine.activeModule.constructor.name || 'module') : 'none';
+    var stores = window.$SM && $SM.get ? ($SM.get('stores') || {}) : {};
+    var game = window.$SM && $SM.get ? {
+      buildings: $SM.get('game.buildings') || {},
+      population: $SM.get('game.population') || 0,
+      workers: $SM.get('game.workers') || {},
+      path: $SM.get('game.path') || {},
+      craft: $SM.get('game.craft') || {}
+    } : {};
+    var panel = window.Engine && Engine.activeModule && Engine.activeModule.panel;
+    var panelText = panel && panel.length ? norm(panel[0].innerText || panel[0].textContent).slice(0, 1800) : '';
+    var event = document.getElementById('event');
+    var eventText = event && visible(event) ? norm(event.innerText || event.textContent).slice(0, 700) : '';
+    var story = document.getElementById('log') || document.getElementById('story') ||
+      document.querySelector('.log, #events, .events');
+    var storyText = story ? norm(story.innerText || story.textContent).slice(-1400) : '';
+    return JSON.stringify({module:moduleName,stores:stores,game:game,position:window.World && World.curPos || null,
+      health:window.World && World.health,water:window.World && World.water,food:window.Path && Path.outfit && Path.outfit['cured meat'],
+      panel:panelText,event:eventText,story:storyText});
+  }
+
+  function adaptiveLog(type, action, reward, payload) {
+    var row = {run_id:adaptiveRunId || null,event_type:type,context:'default',action:action || null,
+      reward:reward == null ? null : reward,payload:payload || {}};
+    sendAIEventBatch([row]).catch(function(){});
+  }
+
+  function beginAdaptiveRun() {
+    if (adaptiveRunStartPending || adaptiveRunId) return;
+    adaptiveRunStartPending = true;
+    startAIRun('live_autoplay', {source:'live_game',policy:'progress_novelty_v1'}).then(function(id) {
+      adaptiveRunId = id || null;
+      adaptiveLog('autoplay_enabled','start_autoplay',0,{policy:'progress_novelty_v1'});
+    }).catch(function() {}).then(function(){ adaptiveRunStartPending = false; });
+  }
+
+  function finishAdaptiveRun(status) {
+    var id = adaptiveRunId;
+    adaptiveRunId = null;
+    if (id) finishAIRun(id,status || 'completed',{completed_actions:adaptiveCompleted,stalled_actions:adaptiveStalled,
+      policy:'progress_novelty_v1'}).catch(function(){});
+  }
+
+  function settleAdaptiveAction(progressed, reason, currentState) {
+    if (!adaptivePendingAction) return;
+    var pending = adaptivePendingAction;
+    adaptivePendingAction = null;
+    var reward = progressed ? 1 : -1;
+    if (progressed) {
+      adaptiveCompleted++;
+      adaptiveLastProgressAt = Date.now();
+      adaptiveActionCooldowns[pending.key] = 0;
+    } else {
+      adaptiveStalled++;
+      adaptiveActionCooldowns[pending.key] = Date.now() + 30000;
+    }
+    adaptiveLog('action_result',pending.key,reward,{
+      source:'live_autoplay',progressed:progressed,reason:reason,elapsed_ms:Date.now()-pending.startedAt,
+      before:pending.before.slice(0,1800),after:(currentState || '').slice(0,1800),simulation:false
+    });
+    adaptiveLog('autoplay_feedback',pending.key,reward,{progressed:progressed,reason:reason,
+      elapsed_ms:Date.now()-pending.startedAt,simulation:false});
+    if (progressed) {
+      // A useful change is evidence; refresh policy so later decisions use it.
+      loadCombatPolicy('default',true);
+    }
+  }
+
+  function monitorAdaptiveAction() {
+    if (!enabled) return;
+    var state = adaptiveSnapshot();
+    if (!adaptiveLastState) adaptiveLastState = state;
+    if (state !== adaptiveLastState) {
+      adaptiveLastState = state;
+      adaptiveLastProgressAt = Date.now();
+      if (adaptivePendingAction && Date.now() - adaptivePendingAction.startedAt >= 700) {
+        settleAdaptiveAction(true,'state_or_story_changed',state);
+      }
+    }
+    if (adaptivePendingAction) {
+      var elapsed = Date.now() - adaptivePendingAction.startedAt;
+      if (elapsed >= 4500) settleAdaptiveAction(false,'no_progress_within_4_5_seconds',state);
+      else return true;
+    }
+    return false;
+  }
+
+  function beginAdaptiveAction(el) {
+    if (!enabled || !el) return true;
+    var now = Date.now();
+    if (adaptivePendingAction) return false;
+    var key = adaptiveActionKey(el);
+    if (adaptiveActionCooldowns[key] && adaptiveActionCooldowns[key] > now) return false;
+    var state = adaptiveSnapshot();
+    adaptivePendingAction = {key:key,label:norm(el.innerText || el.textContent).slice(0,120),
+      before:state,startedAt:now,module:window.Engine && Engine.activeModule &&
+        (Engine.activeModule.name || Engine.activeModule.title || 'module') || 'none'};
+    adaptiveRecentCounts[key] = (adaptiveRecentCounts[key] || 0) + 1;
+    adaptiveLastDecisionAt = now;
+    adaptiveLog('autoplay_decision',key,null,{label:adaptivePendingAction.label,module:adaptivePendingAction.module,
+      baseline:state.slice(0,1800),repeat_count:adaptiveRecentCounts[key],policy:'progress_novelty_v1',simulation:false});
+    return true;
+  }
+
+  function adaptiveScore(el, baseScore) {
+    var key = adaptiveActionKey(el);
+    var now = Date.now();
+    if (adaptiveActionCooldowns[key] && adaptiveActionCooldowns[key] > now) return -100;
+    var localRepeats = adaptiveRecentCounts[key] || 0;
+    var repeatPenalty = Math.min(28, Math.max(0, localRepeats - 1) * 5);
+    var learned = learnedActionBonus('default',key);
+    var label = norm(el.innerText || el.textContent);
+    // Story choices, unlocks, new locations and resource/inventory changes are
+    // worth trying; pure maintenance gets less priority when it repeats.
+    var noveltyBonus = /discover|new|unlock|story|continue|investigate|explore|find|learn|build|craft|fabricate|upgrade|repair|trade|buy|equip|embark|return|landmark|signal|ship|launch|lift off/.test(label) ? 9 : 0;
+    if (/stoke fire|light fire|gather wood|check traps/.test(label) && localRepeats > 2) noveltyBonus -= 8;
+    return baseScore + learned + noveltyBonus - repeatPenalty;
   }
 
   function loadCombatPolicy(context, forceRefresh) {
@@ -1406,6 +1558,8 @@
     if (!enabled || !document.body || (window.Engine && Engine.GAME_OVER)) return;
     flushCombatLearningQueue();
     monitorCombatLearning();
+    beginAdaptiveRun();
+    if (monitorAdaptiveAction()) return;
     // Resolve active random events before journey movement or normal actions.
     if (handleEvent()) return;
     // Equip, embark, explore safely, and return home when on the journey screens.
@@ -1422,7 +1576,7 @@
     )).filter(function (el) {
       return ready(el) && !el.closest('.menu') && !el.closest('#event');
     }).map(function (el) {
-      return { el: el, score: score(el) };
+      return { el: el, score: adaptiveScore(el, score(el)) };
     }).filter(function (item) { return item.score > 0; });
 
     candidates.sort(function (a, b) {
