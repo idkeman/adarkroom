@@ -1762,8 +1762,10 @@
     var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
       return resolveNaturalLanguageStep(step, actions);
     });
-    combatTestReport('Preparing local language model… first use may download model files.');
+    combatTestReport('Starting local AI. The first run downloads model files; later runs should reuse the browser cache.');
     var localPlanner = window.WebLLMCommandPlanner;
+    var stopModelStatus = localPlanner && typeof localPlanner.subscribe === 'function' ?
+      localPlanner.subscribe(function(status) { combatTestReport(status); }) : function() {};
     var planningPromise = localPlanner && typeof localPlanner.plan === 'function' ?
       localPlanner.plan(text, JSON.parse(adaptiveSnapshot()), actions.map(function(a) {
         return {key:a.key,label:a.label,score:a.baseScore};
@@ -1774,6 +1776,7 @@
       }) :
       Promise.resolve({model_available:false, error:'Local WebLLM module is still loading.'});
     planningPromise.then(function(modelPlan) {
+      stopModelStatus();
       if (modelPlan && modelPlan.model_available && Array.isArray(modelPlan.steps) && modelPlan.steps.length) {
         aiCommandQueue = modelPlan.steps.map(function(step) {
           return {kind:'action',text:text,intent:'local_model_planned',actionKey:step.action_key,
@@ -1807,6 +1810,7 @@
         executeNextNaturalLanguageStep();
       });
     }).catch(function(error) {
+      stopModelStatus();
       combatTestReport('Could not plan or start command telemetry.\n'+(error&&error.message||error));
     });
   }
