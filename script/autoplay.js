@@ -1458,7 +1458,7 @@
       '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' +
       '<button type="button" data-adr-test="runs">View runs</button><button type="button" data-adr-test="events">View events</button>' +
       '<button type="button" data-adr-test="actions">View action stats</button><button type="button" data-adr-test="paths">View path stats</button>' +
-      '<button type="button" data-adr-test="inventory">View inventory snapshots</button><button type="button" data-adr-test="refresh">Refresh all outputs</button></div>' +
+      '<button type="button" data-adr-test="inventory">View inventory snapshots</button><button type="button" data-adr-test="policy">View combat policy</button><button type="button" data-adr-test="refresh">Refresh all outputs</button></div>' +
       '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#242424;border-radius:6px;padding:10px;min-height:90px;max-height:45vh;overflow:auto">Ready. Run a journey or inspect a Supabase table.</div>' +
       '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcut: Ctrl+Shift+P. Live actions are logged when possible; simulated outcomes are clearly marked.</div>';
     document.body.appendChild(combatTestPanel);
@@ -1471,7 +1471,7 @@
       if (action === 'combat') runCombatLearningSimulation();
       if (action === 'connection') runCombatAPIHealthCheck();
       if (action === 'refresh') showAIDashboard('all');
-      if (action === 'runs' || action === 'events' || action === 'actions' || action === 'paths' || action === 'inventory') showAIDashboard(action);
+      if (action === 'runs' || action === 'events' || action === 'actions' || action === 'paths' || action === 'inventory' || action === 'policy') showAIDashboard(action);
     });
     return combatTestPanel;
   }
@@ -1490,7 +1490,7 @@
   function showAIDashboard(section) {
     combatTestReport('Loading Supabase AI tables…');
     sendAITelemetry({ op: 'dashboard', limit: 40 }).then(function(data) {
-      var names = section === 'all' ? ['runs','events','actions','paths','inventory'] : [section];
+      var names = section === 'all' ? ['runs','events','actions','paths','inventory','combat_policy'] : [section === 'policy' ? 'combat_policy' : section];
       var output = names.map(function(name) {
         var rows = data[name] || [];
         return '=== ' + name.toUpperCase() + ' (' + rows.length + ' rows returned) ===\n' +
