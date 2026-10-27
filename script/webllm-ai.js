@@ -5,10 +5,11 @@
 (function () {
   'use strict';
 
-  var MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
+  var MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
   var enginePromise = null;
   var statusText = 'Model not loaded; first use downloads model files.';
   var statusListeners = [];
+  var lastProgressAt = 0;
 
   function setStatus(value) {
     statusText = value;
@@ -37,6 +38,7 @@
         return webllm.CreateMLCEngine(MODEL_ID, {
           initProgressCallback: function (report) {
             var text = report && report.text ? report.text : 'Preparing local model…';
+            lastProgressAt = Date.now();
             setStatus('Downloading/preparing local model: ' + text);
           }
         });
