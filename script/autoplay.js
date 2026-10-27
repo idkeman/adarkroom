@@ -1768,7 +1768,7 @@
       localPlanner.plan(text, JSON.parse(adaptiveSnapshot()), actions.map(function(a) {
         return {key:a.key,label:a.label,score:a.baseScore};
       })).catch(function(error) {
-        combatTestReport('Local model unavailable; using limited local intent matching.\\n' +
+        combatTestReport('Local model unavailable; using limited local intent matching.\n' +
           (error && error.message || error));
         return {model_available:false, error:String(error && error.message || error)};
       }) :
@@ -1779,17 +1779,17 @@
           return {kind:'action',text:text,intent:'local_model_planned',actionKey:step.action_key,
             label:step.label,reason:step.reason,score:100,matched:true};
         });
-        combatTestReport('LOCAL MODEL INTERPRETATION ('+modelPlan.model+')\\n'+(modelPlan.explanation||'')+
-          '\\n\\nEXECUTION PLAN\\n'+aiCommandQueue.map(function(p,i) {
+        combatTestReport('LOCAL MODEL INTERPRETATION ('+modelPlan.model+')\n'+(modelPlan.explanation||'')+
+          '\n\nEXECUTION PLAN\n'+aiCommandQueue.map(function(p,i) {
             return (i+1)+'. '+p.label+' — '+(p.reason||'selected for your request');
-          }).join('\\n'));
+          }).join('\n'));
       } else {
         aiCommandQueue = fallbackSteps;
-        combatTestReport('LOCAL INTENT MATCHING (model unavailable)\\n'+text+
-          '\\n\\nPLAN\\n'+aiCommandQueue.map(function(p,i) {
+        combatTestReport('LOCAL INTENT MATCHING (model unavailable)\n'+text+
+          '\n\nPLAN\n'+aiCommandQueue.map(function(p,i) {
             return (i+1)+'. '+p.text+' → '+(p.label || p.kind)+(p.score?' (score '+p.score+')':'');
-          }).join('\\n')+
-          '\\n\\nFor broader English, check WebGPU support and reload after the model finishes downloading.');
+          }).join('\n')+
+          '\n\nFor broader English, check WebGPU support and reload after the model finishes downloading.');
       }
       aiCommandIndex = 0;
       if (!aiCommandQueue.length) {
@@ -1806,7 +1806,7 @@
         aiCommandActive = true;
         executeNextNaturalLanguageStep();
       });
-.catch(function(error) {
+    }).catch(function(error) {
       combatTestReport('Could not plan or start command telemetry.\n'+(error&&error.message||error));
     });
   }
