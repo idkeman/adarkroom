@@ -82,7 +82,7 @@
     if (el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true') return -100;
     if (el.closest('.menu') || el.closest('#adr-autoplay-status')) return -100;
     if (el.id === 'gatherButton') best = Math.max(best, 110);
-    if (/^(stoke fire|light fire)[.!]?$/.test(text)) return 1000;
+    if (/^(stoke fire|light fire)[.!]?$/.test(text)) best = Math.max(best, 135);
     if (/^(stoke fire|gather wood|check traps|embark|return home)[.!]?$/.test(text)) best += 8;
     best += investmentBonus(el);
     return best;
@@ -401,13 +401,18 @@
     var now = Date.now();
     if (adaptiveActionCooldowns[key] && adaptiveActionCooldowns[key] > now) return -100;
     var localRepeats = adaptiveRecentCounts[key] || 0;
-    var repeatPenalty = Math.min(28, Math.max(0, localRepeats - 1) * 5);
+    var repeatPenalty = Math.min(95, Math.max(0, localRepeats - 1) * 9);
     var learned = learnedActionBonus('default',key);
     var label = norm(el.innerText || el.textContent);
     // Story choices, unlocks, new locations and resource/inventory changes are
     // worth trying; pure maintenance gets less priority when it repeats.
     var noveltyBonus = /discover|new|unlock|story|continue|investigate|explore|find|learn|build|craft|fabricate|upgrade|repair|trade|buy|equip|embark|return|landmark|signal|ship|launch|lift off/.test(label) ? 9 : 0;
-    if (/stoke fire|light fire|gather wood|check traps/.test(label) && localRepeats > 2) noveltyBonus -= 8;
+    if (/stoke fire|light fire|gather wood|check traps/.test(label) && localRepeats > 2) noveltyBonus -= Math.min(45, (localRepeats - 2) * 8);
+    // Once an action has succeeded repeatedly, actively rotate to other useful
+    // options instead of letting its fixed base priority dominate forever.
+    if (localRepeats > 3 && /stoke fire|light fire|gather wood|check traps|collect all|take everything|take all/.test(label)) {
+      repeatPenalty += Math.min(60, (localRepeats - 3) * 10);
+    }
     return baseScore + learned + noveltyBonus - repeatPenalty;
   }
 
