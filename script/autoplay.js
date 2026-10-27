@@ -215,6 +215,10 @@
   var COMBAT_AI_URL = 'https://dkwmkvruzebnqlmvwzhy.supabase.co/functions/v1/adr-combat-ai';
   var COMBAT_AI_KEY = 'sb_publishable_Tur9X4MaQjH__4DnEtwAAQ_Xy9xVl5P';
   var combatEpisode = null;
+  // Per-enemy calibration records actual health lost to an enemy hit. The AI
+  // only waits for a calibration hit when the current estimate says two hits
+  // are survivable; otherwise it attacks immediately rather than gambling.
+  var combatHitCalibration = {};
   var combatPolicyCache = {};
   var combatPolicyPending = {};
   var combatEndCandidateAt = 0;
@@ -817,8 +821,31 @@
       beginCombatLearning(event, enemy, aiContext);
       var scene = window.Events && Events.activeEvent() && Events.activeEvent().scenes
         ? Events.activeEvent().scenes[Events.activeScene] : null;
-      var enemyDamage = Math.max(0, Number(scene && scene.damage) || 0);
+      var sceneDamageEstimate = Math.max(0, Number(scene && scene.damage) || 0);
       var enemyDelay = Math.max(0.5, Number(scene && scene.attackDelay) || 2);
+      var enemyKey = String((event && (event.name || event.id)) || 'event') + ':' +
+        String((enemy && (enemy.id || enemy.getAttribute('data-name'))) || enemyHp);
+      var calibration = combatHitCalibration[enemyKey] || (combatHitCalibration[enemyKey] = {
+        lastHp: hp, observedDamage: 0, sampleCount: 0, calibrationStartedAt: 0,
+        calibrationDone: false
+      });
+      // Health is sampled every autoplay tick. A drop while the same enemy is
+      // active is the game's real applied damage (after armor/status effects).
+      if (typeof calibration.lastHp === 'number' && hp < calibration.lastHp) {
+        var appliedHit = calibration.lastHp - hp;
+        if (appliedHit > 0 && appliedHit <= maxHp * 1.5) {
+          calibration.observedDamage = calibration.sampleCount
+            ? (calibration.observedDamage * 0.65 + appliedHit * 0.35) : appliedHit;
+          calibration.sampleCount++;
+          calibration.calibrationDone = true;
+        }
+      }
+      calibration.lastHp = hp;
+      // Prefer measured in-game damage once available; before that, use the
+      // scene's damage estimate as a conservative fallback.
+      var enemyDamage = calibration.sampleCount > 0
+        ? Math.max(calibration.observedDamage, sceneDamageEstimate * 0.75)
+        : sceneDamageEstimate;
       var threat = enemyDamage / enemyDelay;
 
       function healAmount(id) {
@@ -882,12 +909,33 @@
         '#attackButtons .button, .weaponButton, #attack_fists, #buttons #attack-disruptor, #buttons #attack-bolas'
       )).filter(ready);
 
-      // Tactical ammunition rule: estimate whether the next enemy hit is
-      // survivable. If HP safely exceeds one hit (or a shield blocks it), use
-      // melee/unarmed attacks and preserve bullets. If a hit would kill, spend
-      // bullets through the rifle as the emergency option; do not waste other
-      // consumable weapons in that emergency branch.
+      // Calibrate the enemy's real applied damage once per enemy when it is
+      // demonstrably safe: require enough HP to survive two estimated hits,
+      // no current emergency, and no active shield. Never deliberately wait
+      // for a hit when the estimate says it could be fatal. After calibration,
+      // all weapon choices use the observed damage rather than raw scene damage.
       var playerStatusNow = window.jQuery ? jQuery(player).data('status') : player && player.getAttribute('data-status');
+      var calibrationSafeHp = Math.max(sceneDamageEstimate * 2 + 1, maxHp * 0.55);
+      if (!calibration.calibrationDone && calibration.sampleCount === 0 &&
+          !calibration.calibrationStartedAt && sceneDamageEstimate > 0 &&
+          hp > calibrationSafeHp && hpRatio > 0.55 && !enemyStunned &&
+          playerStatusNow !== 'shield') {
+        calibration.calibrationStartedAt = Date.now();
+        calibration.lastHp = hp;
+        // Pause attacks briefly so the enemy can land one real hit. This is
+        // skipped entirely in low-health or uncertain-danger situations.
+        return true;
+      }
+      if (!calibration.calibrationDone && calibration.calibrationStartedAt &&
+          Date.now() - calibration.calibrationStartedAt < enemyDelay * 1000 + 500 &&
+          hp === calibration.lastHp) {
+        return true;
+      }
+      if (calibration.calibrationStartedAt && !calibration.calibrationDone) {
+        // No hit landed in the calibration window; stop waiting and fall back
+        // to the conservative estimate so autoplay cannot stall indefinitely.
+        calibration.calibrationStartedAt = 0;
+      }
       var canSurviveOneHit = playerStatusNow === 'shield' || hp > enemyDamage;
       var rifleAttack = attacks.find(function(el) {
         return /attack[_-]rifle$/.test(el.id) || /rifle/i.test(norm(el.innerText || el.textContent));
