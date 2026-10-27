@@ -229,22 +229,39 @@
     });
   }
 
-  function loadCombatPolicy(context) {
+  function loadCombatPolicy(context, forceRefresh) {
+    if (!context) return;
+    if (forceRefresh) delete combatPolicyCache[context];
     if (combatPolicyCache[context] || combatPolicyPending[context]) return;
     combatPolicyPending[context] = true;
-    requestCombatAI({ op: 'policy', context: context, actions: ['attack_fists'] })
-      .then(function (data) { combatPolicyCache[context] = data.stats || {}; })
-      .catch(function () { combatPolicyCache[context] = {}; })
+    requestCombatAI({ op: 'policy', context: context, actions: [] })
+      .then(function (data) {
+        combatPolicyCache[context] = data && data.stats && typeof data.stats === 'object' ? data.stats : {};
+      })
+      .catch(function () {
+        // Do not cache a failed request as an empty policy forever. A later
+        // combat tick can retry and recover the learned policy.
+        delete combatPolicyCache[context];
+      })
       .then(function () { delete combatPolicyPending[context]; });
+  }
+
+  function invalidateCombatPolicy() {
+    combatPolicyCache = {};
+    // Refresh every context already observed by this client after the next
+    // fight begins; this avoids reusing pre-learning statistics indefinitely.
   }
 
   function learnedActionBonus(context, action) {
     var stat = combatPolicyCache[context] && combatPolicyCache[context][action];
     if (!stat || Number(stat.attempts) < 2) return 0;
-    // Conservative exploration: only learned results with repeated evidence
-    // influence the tactical score; strong failures can demote a bad habit.
-    var confidence = Math.min(1, Number(stat.attempts) / 8);
-    return Math.max(-4, Math.min(4, Number(stat.avgReward) * 4)) * confidence;
+    var attempts = Math.max(0, Number(stat.attempts) || 0);
+    var confidence = Math.min(1, attempts / 5);
+    var average = Number(stat.avgReward) || 0;
+    // Stronger but bounded feedback: repeated bad outcomes demote an action,
+    // while repeated wins promote it. The cap prevents learning from overriding
+    // basic safety constraints or making a single noisy outcome decisive.
+    return Math.max(-7, Math.min(7, average * 7)) * confidence;
   }
 
   // Combat-only loadout planner. It enumerates every supported weapon and
@@ -357,7 +374,7 @@
     if (combatEpisode) finishCombatLearning(!(window.World && World.dead));
     combatEpisode = { event: event, enemy: enemy, context: context, actions: [], startedAt: Date.now() };
     combatEndCandidateAt = 0;
-    loadCombatPolicy(context);
+    loadCombatPolicy(context, true);
   }
 
   function recordCombatChoice(el, context) {
@@ -405,6 +422,7 @@
         queue.shift();
         try { localStorage.setItem('adrCombatAILearningQueue', JSON.stringify(queue)); } catch (e) {}
         learningFlushInProgress = false;
+        invalidateCombatPolicy();
         if (queue.length) flushCombatLearningQueue();
         return;
       }
@@ -414,6 +432,9 @@
         .catch(function () {
           index--;
           learningFlushInProgress = false;
+          // Keep the batch queued, but avoid hammering a failed endpoint every
+          // autoplay tick. The next successful policy/outcome interaction can
+          // retry it.
         });
     }
     sendNext();
