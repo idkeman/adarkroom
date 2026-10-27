@@ -1716,15 +1716,15 @@
     if (/\b(stop|pause|cancel|abort)\b/.test(q)) return {kind:'stop',text:step};
     if (/\b(status|what is happening|what are you doing|show progress)\b/.test(q)) return {kind:'status',text:step};
     if (/\b(inspect|list|show|what).*\b(actions|buttons|commands|functions)\b/.test(q)) return {kind:'inspect',text:step};
-    if (/\b(explore|expedition|journey|go out|find something new|discover)\b/.test(q)) intent='explore';
-    else if (/\b(story|progress|advance|finish|endgame|ship|launch|lift off)\b/.test(q)) intent='progress';
-    else if (/\b(build|construct|make a|create a)\b/.test(q)) intent='build';
-    else if (/\b(craft|fabricate|produce|manufacture)\b/.test(q)) intent='craft';
-    else if (/\b(gather|collect|farm|harvest|wood|food|meat|resources)\b/.test(q)) intent='gather';
-    else if (/\b(weapon|weaponry|armour|armor|fight|combat|attack|prepare for battle)\b/.test(q)) intent='combat';
-    else if (/\b(trade|buy|purchase|sell|merchant|trading post)\b/.test(q)) intent='trade';
+    if (/\b(explore|expedition|journey|go out|find something new|discover|see what.s out there|what.s beyond|venture out|ready to leave)\b/.test(q)) intent='explore';
+    else if (/\b(story|progress|advance|finish|endgame|ship|launch|lift off|get further|move forward|make progress|what comes next)\b/.test(q)) intent='progress';
+    else if (/\b(build|construct|make a|create a|grow the settlement|place thriving|develop the village|expand the town)\b/.test(q)) intent='build';
+    else if (/\b(craft|fabricate|produce|manufacture|make better gear)\b/.test(q)) intent='craft';
+    else if (/\b(gather|collect|farm|harvest|wood|food|meat|resources|running out|need supplies|struggling to survive|stay alive|survive longer)\b/.test(q)) intent='gather';
+    else if (/\b(weapon|weaponry|armour|armor|fight|combat|attack|prepare for battle|make me stronger|defend myself)\b/.test(q)) intent='combat';
+    else if (/\b(trade|buy|purchase|sell|merchant|trading post|make money|earn more)\b/.test(q)) intent='trade';
     else if (/\b(return home|come back|go home|return to village)\b/.test(q)) intent='return';
-    else if (/\b(stoke|fire|keep warm|fuel)\b/.test(q)) intent='fire';
+    else if (/\b(stoke|fire|keep warm|fuel|keep the fire going)\b/.test(q)) intent='fire';
 
     var explicit = stripped.replace(/\b(build|construct|make|create|craft|fabricate|produce|buy|purchase|gather|collect|find|get|obtain|upgrade|repair|equip|use|go to|visit|return to|explore|investigate|unlock|advance|progress|continue|finish|complete|please|the|a|an|some|me|for)\b/g,' ')
       .replace(/\s+/g,' ').trim();
@@ -1734,13 +1734,13 @@
       var words = explicit.split(/\s+/).filter(function(w){return w.length>2;});
       words.forEach(function(w){ if(label.indexOf(w)!==-1) overlap += Math.min(6,w.length); });
       if (explicit && (label.indexOf(explicit)!==-1 || explicit.indexOf(label)!==-1)) overlap += 20;
-      if (intent==='explore' && /embark|explore|return home|go out/.test(label)) scoreValue += 55;
-      if (intent==='progress' && /lift off|launch|ship|upgrade engine|power cycle|reinforce hull|continue|investigate|discover|unlock/.test(label)) scoreValue += 70;
-      if (intent==='build' && /build|construct/.test(label)) scoreValue += 45;
-      if (intent==='craft' && /craft|fabricate|make|create/.test(label)) scoreValue += 45;
-      if (intent==='gather' && /gather|collect|hunt|check traps|scavenge/.test(label)) scoreValue += 40;
-      if (intent==='combat' && /weapon|armour|armor|bullets|attack|fight|equip|embark/.test(label)) scoreValue += 35;
-      if (intent==='trade' && /trade|buy|sell|purchase|trading post/.test(label)) scoreValue += 45;
+      if (intent==='explore' && /embark|explore|return home|go out|leave|investigate/.test(label)) scoreValue += 55;
+      if (intent==='progress' && /lift off|launch|ship|upgrade engine|power cycle|reinforce hull|continue|investigate|discover|unlock|embark/.test(label)) scoreValue += 70;
+      if (intent==='build' && /build|construct|hut|trading post|cart|lodge|workshop|tannery|smokehouse/.test(label)) scoreValue += 45;
+      if (intent==='craft' && /craft|fabricate|make|create|upgrade|repair/.test(label)) scoreValue += 45;
+      if (intent==='gather' && /gather|collect|hunt|check traps|scavenge|wood|food|trap/.test(label)) scoreValue += 40;
+      if (intent==='combat' && /weapon|armour|armor|bullets|attack|fight|equip|embark|buy|fabricate/.test(label)) scoreValue += 35;
+      if (intent==='trade' && /trade|buy|sell|purchase|trading post|merchant/.test(label)) scoreValue += 45;
       if (intent==='return' && /return home|return to village|go home/.test(label)) scoreValue += 100;
       if (intent==='fire' && /stoke fire|light fire|add fuel/.test(label)) scoreValue += 35;
       if (/\b(don't|do not|avoid|stop wasting time|instead)\b/.test(q) && /stoke fire|light fire|wait|gather wood/.test(label)) scoreValue -= 60;
