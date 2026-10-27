@@ -1658,6 +1658,8 @@
   var aiCommandTimer = null;
   var aiCommandIndex = 0;
   var aiCommandText = '';
+  var aiCommandRepeatGoal = false;
+  var aiCommandRepeatCount = 0;
 
   function logNaturalLanguageEvent(type, action, reward, payload) {
     sendAIEventBatch([{run_id:aiCommandRunId || null,event_type:type,context:'default',
@@ -1726,8 +1728,27 @@
     else if (/\b(return home|come back|go home|return to village)\b/.test(q)) intent='return';
     else if (/\b(stoke|fire|keep warm|fuel|keep the fire going)\b/.test(q)) intent='fire';
 
-    var explicit = stripped.replace(/\b(build|construct|make|create|craft|fabricate|produce|buy|purchase|gather|collect|find|get|obtain|upgrade|repair|equip|use|go to|visit|return to|explore|investigate|unlock|advance|progress|continue|finish|complete|please|the|a|an|some|me|for)\b/g,' ')
+    var explicit = stripped.replace(/\b(build|construct|make|create|craft|fabricate|produce|buy|purchase|gather|collect|find|get|obtain|upgrade|repair|equip|use|go to|visit|return to|explore|investigate|unlock|advance|progress|continue|finish|complete|please|the|a|an|some|me|for|as many as possible|as many as you can|as much as possible|as much as you can|keep|continue to|until|you can|possible|available|afford|affordably)\b/g,' ')
       .replace(/\s+/g,' ').trim();
+    // Goal phrases often contain a target noun rather than a game button's wording.
+    // Match the target explicitly before broad intent scoring to avoid doing an unrelated action.
+    var target = '';
+    var targetMatch = q.match(/\b(?:build|construct|make|create|craft|fabricate|produce|buy|purchase|get|obtain)\s+(?:as many|as much|more|some|lots of|a lot of|additional)?\s*(?:of\s+the\s+|of\s+|the\s+)?([a-z][a-z -]{1,35}?)(?:\s+as many as possible|\s+as much as possible|\s+as many as you can|\s+as much as you can|\s+if possible|\s+until\b|\s+as possible|\s+please)?$/i);
+    if (targetMatch) target = targetMatch[1].replace(/\b(as many|as much|more|possible|you can|as you can)\b/gi,' ').replace(/\s+/g,' ').trim();
+    var targetWords = target.split(/\s+/).filter(function(w){return w.length>2 && !/^(many|much|more|lots|lot|some|the|and|for)$/.test(w);});
+    if (targetWords.length) {
+      var targeted = actions.map(function(a) {
+        var label = a.label;
+        var hit = targetWords.filter(function(w) {
+          return label.indexOf(w) !== -1 || (w==='traps' && /\btrap\b/.test(label)) ||
+            (w==='trapping' && /\btrap\b/.test(label));
+        }).length;
+        var actionType = /\b(build|construct|make|create)\b/.test(q) ? /build|construct/.test(label) : true;
+        return {action:a,score:hit * 30 + (actionType ? 15 : 0),overlap:hit * 10};
+      }).filter(function(item){return item.score >= 45;}).sort(function(a,b){return b.score-a.score;});
+      if (targeted.length) return {kind:'action',text:step,intent:intent,actionKey:targeted[0].action.key,
+        label:targeted[0].action.label,score:targeted[0].score,matched:true,target:target,repeat:/\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/.test(q)};
+    }
     var ranked = actions.map(function(a) {
       var label = a.label, scoreValue = a.baseScore;
       var overlap = 0;
@@ -1749,7 +1770,8 @@
     }).sort(function(a,b){return b.score-a.score;});
     if (!ranked.length || ranked[0].score <= 0) return {kind:'unresolved',text:step,intent:intent};
     return {kind:'action',text:step,intent:intent,actionKey:ranked[0].action.key,
-      label:ranked[0].action.label,score:ranked[0].score,matched:ranked[0].overlap>0};
+      label:ranked[0].action.label,score:ranked[0].score,matched:ranked[0].overlap>0,
+      repeat:/\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/.test(q)};
   }
 
   function submitNaturalLanguageCommand() {
@@ -1759,6 +1781,8 @@
     if (aiCommandActive) { combatTestReport('A command is already running. Stop it before issuing another.'); return; }
     aiCommandText = text;
     var actions = liveGameActions();
+    aiCommandRepeatGoal = /\b(as many as possible|as many as you can|as much as possible|as much as you can|keep (?:building|making|crafting|producing|buying)|until (?:i|we|you) (?:can't|cannot|can no longer|run out|have no))\b/i.test(text);
+    aiCommandRepeatCount = 0;
     var fallbackSteps = splitCommandIntoSteps(text).map(function(step) {
       return resolveNaturalLanguageStep(step, actions);
     });
