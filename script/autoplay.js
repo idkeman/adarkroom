@@ -1795,7 +1795,7 @@
       return step.kind === 'stop' || step.kind === 'status' || step.kind === 'inspect';
     });
     var directAction = fallbackSteps.length && fallbackSteps.every(function(step) {
-      return step.kind !== 'unresolved' && (step.kind !== 'action' || step.matched || step.score >= 45);
+      return step.kind !== 'unresolved' && (step.kind !== 'action' || step.matched);
     });
 
     function startExecution(plans, plannerName, explanation) {
