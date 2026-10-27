@@ -432,9 +432,13 @@
     if (!combatEpisode) return;
     var action = norm(el.id).replace(/[^a-z0-9_-]/g, '').slice(0, 48);
     if (!action) action = 'unknown';
-    combatEpisode.actions.push({ action: action, context: context || combatEpisode.context });
+    var actionContext = context || combatEpisode.context;
+    combatEpisode.actions.push({ action: action, context: actionContext });
     if (combatEpisode.actions.length > 40) combatEpisode.actions.shift();
-    loadCombatPolicy(context || combatEpisode.context);
+    sendAIEventBatch([{ run_id: window.__adrLiveCombatRunId || null, event_type: 'combat_choice',
+      context: actionContext, action: action, reward: 0,
+      payload: { source: 'live_combat', event: 'action_selected', enemy: combatEpisode.enemy && (combatEpisode.enemy.name || combatEpisode.enemy.id) || null } }]).catch(function() {});
+    loadCombatPolicy(actionContext);
   }
 
   function finishCombatLearning(won) {
@@ -457,6 +461,15 @@
     try { queue = JSON.parse(localStorage.getItem('adrCombatAILearningQueue') || '[]'); } catch (e) {}
     queue.push({ context: episode.context, won: won, actions: actions });
     try { localStorage.setItem('adrCombatAILearningQueue', JSON.stringify(queue.slice(-20))); } catch (e) {}
+    var telemetry = actions.map(function(item) {
+      return { run_id: window.__adrLiveCombatRunId || null, event_type: 'action_result',
+        context: item.context || episode.context, action: item.action, reward: item.reward,
+        payload: { source: 'live_combat', won: won, reward: item.reward, episode_context: episode.context } };
+    });
+    telemetry.push({ run_id: window.__adrLiveCombatRunId || null, event_type: 'combat_episode_finished',
+      context: episode.context, action: null, reward: won ? 1 : -1,
+      payload: { source: 'live_combat', won: won, action_count: actions.length } });
+    sendAIEventBatch(telemetry).catch(function() {});
     flushCombatLearningQueue();
   }
 
@@ -1265,7 +1278,18 @@
 
     if (journeyPositionIs(target[0], target[1])) {
       if (!activeJourney.returning) beginJourneyReturn();
-      else return false;
+      else {
+        var completedRun = window.__adrLiveJourneyRunId || null;
+        if (completedRun) {
+          window.__adrLiveJourneyRunId = null;
+          finishAIRun(completedRun, 'completed', { source: 'live_journey', returned_home: true,
+            final_position: World.curPos, inventory: combatInventory(), simulation: false }).catch(function() {});
+          sendAIEventBatch([{run_id:completedRun,event_type:'journey_finished',context:'default',action:'return_home',reward:1,
+            payload:{source:'live_journey',returned_home:true,position:World.curPos,inventory:combatInventory(),simulation:false}}]).catch(function(){});
+        }
+        activeJourney = null;
+        return false;
+      }
     }
     if (!activeJourney.route || !activeJourney.route.length) {
       activeJourney.route = buildJourneyRoute(activeJourney.target[0], activeJourney.target[1]);
@@ -1288,23 +1312,22 @@
     lastAction = Date.now();
     // Record the live journey decision and the selected edge for later route analysis.
     if (enabled) {
+      var liveRunId = window.__adrLiveJourneyRunId || null;
       sendAIEventBatch([{
-        run_id: window.__adrLiveJourneyRunId || null,
-        event_type: 'journey_step',
-        context: 'default',
-        action: 'journey_move',
-        reward: 0,
+        run_id: liveRunId, event_type: 'journey_step', context: 'default', action: 'journey_move', reward: 0,
         payload: { from: previous, to: next, target: activeJourney.target, returning: !!activeJourney.returning,
           route_remaining: activeJourney.route.length, water: Number(World.water) || 0,
-          health: Number(World.health) || 0, food: Number(Path.outfit && Path.outfit['cured meat']) || 0 }
+          health: Number(World.health) || 0, food: Number(Path.outfit && Path.outfit['cured meat']) || 0,
+          tile: tileTextAt(next[0], next[1]), simulation: false }
       }, {
-        run_id: window.__adrLiveJourneyRunId || null,
-        event_type: 'path_result',
-        context: 'default',
-        action: 'journey_move',
-        reward: -0.01,
+        run_id: liveRunId, event_type: 'path_result', context: 'default', action: 'journey_move', reward: -0.01,
         payload: { path_key: pathKey, coordinates: { from_x: previous[0], from_y: previous[1], to_x: next[0], to_y: next[1] },
-          result: 'observed', visited: true, source: 'live_journey', returning: !!activeJourney.returning }
+          result: 'observed', visited: true, source: 'live_journey', returning: !!activeJourney.returning, simulation: false }
+      }, {
+        run_id: liveRunId, event_type: 'inventory_snapshot', context: 'default', action: null, reward: null,
+        payload: { reason: 'live_journey_step', position: next, stores: combatInventory(),
+          water: Number(World.water) || 0, health: Number(World.health) || 0,
+          food: Number(Path.outfit && Path.outfit['cured meat']) || 0, simulation: false }
       }]).catch(function() {});
     }
     return true;
@@ -1327,7 +1350,13 @@
         var embark = document.getElementById('embarkButton');
         if (embark && ready(embark) &&
             Number(Path.outfit['cured meat']) > 0 && Date.now() - lastAction >= 200) {
-          embark.click();
+          startAIRun('live_journey', { source: 'live_game', start_position: World.curPos || null,
+            inventory: combatInventory(), note: 'Live player journey; actions recorded as observed' }).then(function(runId) {
+            if (runId) window.__adrLiveJourneyRunId = runId;
+            embark.click();
+            sendAIEventBatch([{run_id:runId || null,event_type:'journey_started',context:'default',action:'embark',reward:0,
+              payload:{source:'live_journey',position:World.curPos || null,inventory:combatInventory(),simulation:false}}]).catch(function(){});
+          }).catch(function() { embark.click(); });
           lastAction = Date.now();
           return true;
         }
