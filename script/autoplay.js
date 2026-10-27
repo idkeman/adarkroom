@@ -1624,7 +1624,7 @@
       '<div style="display:flex;gap:7px;margin-top:7px"><button type="button" data-adr-test="submit-command">Plan & execute</button><button type="button" data-adr-test="inspect-actions">Inspect available actions</button><button type="button" data-adr-test="stop-command">Stop command</button></div>' +
       '<div style="color:#aaa;font-size:11px;margin-top:6px">Commands use available game controls, observe outcomes, and save the plan/results in Supabase. Destructive save/reset actions are never auto-invoked.</div></div>' +
       '<div id="adr-combat-test-results" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#242424;border-radius:6px;padding:10px;min-height:90px;max-height:45vh;overflow:auto">Ready. Open AI command to issue a natural-language instruction or inspect Supabase learning data.</div>' +
-      '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcut: Ctrl+Shift+P. Live actions are logged when possible; simulated outcomes are clearly marked.</div>';
+      '<div style="color:#aaa;font-size:11px;margin-top:8px">Shortcuts: Ctrl+Shift+P for the AI panel, Ctrl+Shift+I for direct English commands. Live actions are logged when possible; simulated outcomes are clearly marked.</div>';
     document.body.appendChild(combatTestPanel);
     combatTestPanel.addEventListener('click', function(e) {
       var button = e.target.closest('[data-adr-test]');
@@ -1658,6 +1658,11 @@
   var aiCommandTimer = null;
   var aiCommandIndex = 0;
   var aiCommandText = '';
+
+  function logNaturalLanguageEvent(type, action, reward, payload) {
+    sendAIEventBatch([{run_id:aiCommandRunId || null,event_type:type,context:'default',
+      action:action || null,reward:reward == null ? null : reward,payload:payload || {}}]).catch(function(){});
+  }
 
   function splitCommandIntoSteps(text) {
     return String(text || '').replace(/\b(?:and then|then after that|after that|and next)\b/gi, ';')
@@ -1762,7 +1767,7 @@
     }).join('\n')+'\n\nStarting plan…');
     startAIRun('diagnostic',{source:'natural_language_command',request:text,steps:aiCommandQueue}).then(function(runId) {
       aiCommandRunId = runId;
-      adaptiveLog('natural_language_request','interpret_command',null,{request:text,plan:aiCommandQueue,source:'live_game'});
+      logNaturalLanguageEvent('natural_language_request','interpret_command',null,{request:text,plan:aiCommandQueue,source:'live_game'});
       aiCommandActive = true;
       executeNextNaturalLanguageStep();
     }).catch(function(error) {
@@ -1784,20 +1789,20 @@
     if (plan.kind==='stop') { stopNaturalLanguageCommand(); return; }
     if (plan.kind==='status') {
       plan.result='Current game state inspected';
-      adaptiveLog('command_step_result','status',1,{request:plan.text,state:adaptiveSnapshot()});
+      logNaturalLanguageEvent('command_step_result','status',1,{request:plan.text,state:adaptiveSnapshot()});
       aiCommandIndex++; executeNextNaturalLanguageStep(); return;
     }
     if (plan.kind==='inspect') { inspectAvailableGameActions(); plan.result='Action catalog shown'; aiCommandIndex++; executeNextNaturalLanguageStep(); return; }
     if (plan.kind!=='action') {
       plan.result='Could not confidently map this sentence to a ready game action; skipped';
-      adaptiveLog('command_step_result','unresolved',-1,{request:plan.text,reason:plan.result});
+      logNaturalLanguageEvent('command_step_result','unresolved',-1,{request:plan.text,reason:plan.result});
       aiCommandIndex++; executeNextNaturalLanguageStep(); return;
     }
     var actions = liveGameActions();
     var selected = actions.find(function(a){return a.key===plan.actionKey;});
     if (!selected || !ready(selected.el)) {
       plan.result='Chosen action is no longer available; trying the next step';
-      adaptiveLog('command_step_result',plan.actionKey,-1,{request:plan.text,reason:plan.result});
+      logNaturalLanguageEvent('command_step_result',plan.actionKey,-1,{request:plan.text,reason:plan.result});
       aiCommandIndex++; executeNextNaturalLanguageStep(); return;
     }
     plan.before=adaptiveSnapshot();
@@ -1813,13 +1818,13 @@
       var nowState=adaptiveSnapshot();
       if (nowState!==plan.before && Date.now()-plan.startedAt>=700) {
         plan.result='Success: game state/story changed after '+Math.round((Date.now()-plan.startedAt)/1000)+'s';
-        adaptiveLog('command_step_result',plan.actionKey,1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:true});
+        logNaturalLanguageEvent('command_step_result',plan.actionKey,1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:true});
         aiCommandIndex++; executeNextNaturalLanguageStep();
       } else if (Date.now()-plan.startedAt>=4500) {
         plan.result='Stalled: no observable change; action penalized, trying something else';
         adaptiveActionCooldowns[plan.actionKey]=Date.now()+30000;
         adaptiveRecentCounts[plan.actionKey]=(adaptiveRecentCounts[plan.actionKey]||0)+2;
-        adaptiveLog('command_step_result',plan.actionKey,-1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:false,reason:'stall'});
+        logNaturalLanguageEvent('command_step_result',plan.actionKey,-1,{request:plan.text,action:selected.label,elapsed_ms:Date.now()-plan.startedAt,changed:false,reason:'stall'});
         // Re-resolve the same user goal against current controls while excluding the stalled action.
         var alternatives=liveGameActions().filter(function(a){return a.key!==plan.actionKey;});
         var alternative=resolveNaturalLanguageStep(plan.text,alternatives);
@@ -2026,6 +2031,16 @@
     if (event.ctrlKey && event.shiftKey && key === 'p') {
       event.preventDefault();
       showCombatTestPanel();
+      return;
+    }
+    if (event.ctrlKey && event.shiftKey && key === 'i') {
+      event.preventDefault();
+      var aiPanel = ensureCombatTestPanel();
+      aiPanel.style.display = 'block';
+      var commandBox = aiPanel.querySelector('#adr-ai-command-box');
+      if (commandBox) commandBox.style.display = 'block';
+      var commandInput = aiPanel.querySelector('#adr-ai-command-input');
+      if (commandInput) commandInput.focus();
       return;
     }
     if (event.ctrlKey && !event.shiftKey && key === 'p') {
