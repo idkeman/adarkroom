@@ -893,15 +893,32 @@
         return /attack[_-]rifle$/.test(el.id) || /rifle/i.test(norm(el.innerText || el.textContent));
       });
       var bulletsInOutfit = Number((window.Path && Path.outfit && Path.outfit.bullets) || 0);
-      if (!canSurviveOneHit && rifleAttack && bulletsInOutfit > 0) {
-        if (ready(rifleAttack)) {
-          recordCombatChoice(rifleAttack, aiContext);
-          if (clickReady(rifleAttack)) return true;
+      if (!canSurviveOneHit) {
+        // In a potentially lethal situation, use a grenade if it is loaded and
+        // its damage should finish the enemy before another hit; otherwise use
+        // the rifle. This keeps grenades tactical rather than spending them
+        // automatically on every enemy.
+        var grenadeAttack = attacks.find(function(el) {
+          return /attack[_-]grenade$/.test(el.id) || /grenade/i.test(norm(el.innerText || el.textContent));
+        });
+        var grenadeWeapon = window.World && World.Weapons && World.Weapons.grenade;
+        var grenadesInOutfit = Number((window.Path && Path.outfit && Path.outfit.grenade) || 0);
+        var grenadeDamage = grenadeWeapon && typeof grenadeWeapon.damage === 'number'
+          ? grenadeWeapon.damage : 0;
+        var emergencyAttack = grenadeAttack && grenadesInOutfit > 0 &&
+          grenadeDamage >= enemyHp ? grenadeAttack :
+          (rifleAttack && bulletsInOutfit > 0 ? rifleAttack : null);
+        if (emergencyAttack && ready(emergencyAttack)) {
+          recordCombatChoice(emergencyAttack, aiContext);
+          if (clickReady(emergencyAttack)) return true;
         }
-        // Do not spend grenades, bolas or other ammunition while the rifle
-        // emergency action is temporarily unavailable.
-        attacks = attacks.filter(function(el) { return el === rifleAttack; });
-        if (!attacks.length) return true;
+        // Keep emergency choices limited to the gun/grenade options that are
+        // actually stocked; if neither is usable, normal attack ranking below
+        // can still choose the best available fallback.
+        attacks = attacks.filter(function(el) {
+          return (el === rifleAttack && bulletsInOutfit > 0) ||
+            (el === grenadeAttack && grenadesInOutfit > 0);
+        });
       }
       if (canSurviveOneHit) {
         attacks = attacks.filter(function(el) {
@@ -1238,6 +1255,16 @@
       });
     }
     if (meleeName) outfit[meleeName] = 1;
+
+    // Carry grenades when owned, after reserving the primary gun, ammunition,
+    // and melee fallback. Prefer up to two; capacity and food planning below
+    // will reduce this if the pack cannot support the full loadout.
+    if (available('grenade') > 0) {
+      var grenadeWeight = Math.max(0.01, Number(Path.getWeight('grenade')) || 1);
+      var grenadeCount = Math.min(2, available('grenade'),
+        Math.floor(Math.max(0, capacity - outfitWeight(outfit)) / grenadeWeight));
+      if (grenadeCount > 0) outfit.grenade = grenadeCount;
+    }
 
     // No rifle in inventory? Use the best available ranged weapon as fallback.
     if (!rifleOwned) {
