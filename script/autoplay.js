@@ -892,16 +892,22 @@
       var rifleAttack = attacks.find(function(el) {
         return /attack[_-]rifle$/.test(el.id) || /rifle/i.test(norm(el.innerText || el.textContent));
       });
-      if (!canSurviveOneHit && rifleAttack && ready(rifleAttack) &&
-          Number((window.Path && Path.outfit && Path.outfit.bullets) || 0) > 0) {
-        recordCombatChoice(rifleAttack, aiContext);
-        if (clickReady(rifleAttack)) return true;
+      var bulletsInOutfit = Number((window.Path && Path.outfit && Path.outfit.bullets) || 0);
+      if (!canSurviveOneHit && rifleAttack && bulletsInOutfit > 0) {
+        if (ready(rifleAttack)) {
+          recordCombatChoice(rifleAttack, aiContext);
+          if (clickReady(rifleAttack)) return true;
+        }
+        // Do not spend grenades, bolas or other ammunition while the rifle
+        // emergency action is temporarily unavailable.
+        attacks = attacks.filter(function(el) { return el === rifleAttack; });
+        if (!attacks.length) return true;
       }
       if (canSurviveOneHit) {
         attacks = attacks.filter(function(el) {
           var name = el.id.replace(/^attack[_-]/, '').replace(/-/g, ' ');
           var weapon = window.World && World.Weapons && World.Weapons[name];
-          return weapon && (weapon.type === 'melee' || weapon.type === 'unarmed') ||
+          return (weapon && (weapon.type === 'melee' || weapon.type === 'unarmed')) ||
             el.id === 'attack_fists';
         });
       }
@@ -1221,10 +1227,9 @@
     }
 
     var meleeOrder = ['steel sword','iron sword','energy blade','bayonet','bone spear'];
-    var bulletWeight = rifleOwned ? (Number(outfit.bullets) || 0) * Path.getWeight('bullets') : 0;
     var meleeName = meleeOrder.find(function(name) {
       return available(name) > 0 &&
-        outfitWeight(outfit) + Path.getWeight(name) + bulletWeight +
+        outfitWeight(outfit) + Path.getWeight(name) +
         2 * Path.getWeight('cured meat') <= capacity + 0.001;
     });
     if (!meleeName) {
