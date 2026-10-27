@@ -1162,33 +1162,26 @@
   function chooseJourneyWeapon(capacity) {
     if (!window.World || !World.Weapons || !window.Path) return null;
     var stores = journeyStores(), options = [];
-    Object.keys(World.Weapons).forEach(function (name) {
+    Object.keys(World.Weapons).forEach(function(name) {
       var weapon = World.Weapons[name];
       if (!weapon || name === 'fists' || typeof weapon.damage !== 'number' ||
           weapon.damage <= 0 || (Number(stores[name]) || 0) < 1) return;
       var weight = Path.getWeight(name);
       if (weight >= capacity) return;
-
-      var ammo = {}, ammoWeight = 0, canUse = true;
-      Object.keys(weapon.cost || {}).forEach(function (resource) {
+      var ammo = {}, canUse = true;
+      Object.keys(weapon.cost || {}).forEach(function(resource) {
         var available = Math.floor(Number(stores[resource]) || 0);
-        if (available < 1) {
-          canUse = false;
-          return;
-        }
-        var desired = Math.min(4, available);
-        ammo[resource] = desired;
-        ammoWeight += desired * Path.getWeight(resource);
+        if (available < 1) { canUse = false; return; }
+        ammo[resource] = Math.min(name === 'rifle' ? 8 : 3, available);
       });
-      if (!canUse || weight + ammoWeight >= capacity) return;
-
+      if (!canUse) return;
       var scoreValue = weapon.damage / Math.max(1, Number(weapon.cooldown) || 1);
-      if (!Object.keys(weapon.cost || {}).length) scoreValue += 0.35;
+      if (!Object.keys(ammo).length) scoreValue += 0.35;
       scoreValue -= weight * 0.04;
-      scoreValue -= Object.keys(ammo).length * 0.1;
-      options.push({ name: name, score: scoreValue, weight: weight, ammo: ammo });
+      if (name === 'rifle' && (Number(stores.bullets) || 0) >= 4) scoreValue += 5;
+      options.push({name:name,score:scoreValue,weight:weight,ammo:ammo});
     });
-    options.sort(function (a, b) { return b.score - a.score; });
+    options.sort(function(a,b) { return b.score-a.score; });
     return options.length ? options[0] : null;
   }
 
@@ -1206,110 +1199,91 @@
     var capacity = Math.max(1, Number(Path.getCapacity()) || 10);
     var availableFood = Math.floor(Number(stores['cured meat']) || 0);
     if (availableFood < 1) return false;
-
-    // Preserve unknown carried contents, but rebuild normal equipment counts
-    // from the inventory actually available at home.
     var outfit = {};
-    Object.keys(Path.outfit || {}).forEach(function (name) { outfit[name] = Path.outfit[name]; });
-    managedJourneyItems().forEach(function (name) { outfit[name] = 0; });
+    Object.keys(Path.outfit || {}).forEach(function(name) { outfit[name] = Path.outfit[name]; });
+    managedJourneyItems().forEach(function(name) { outfit[name] = 0; });
 
-    // Prefer the strongest loadout that fits with food and supplies.
-    // The general journey selector remains the fallback when no combat plan
-    // can be carried with a safe food reserve.
-    var combatPlan = combatWeaponPlan();
-    var preferred = combatPlan && combatPlan.best;
-    var weapon = chooseJourneyWeapon(capacity);
-    if (preferred && preferred.name !== 'fists' && preferred.inventory > 0 &&
-        preferred.weapon && (preferred.ammoAvailable || !Object.keys(preferred.weapon.cost || {}).length)) {
-      var preferredWeight = Path.getWeight(preferred.name);
-      var preferredAmmo = {};
-      var preferredAmmoWeight = 0;
-      Object.keys(preferred.weapon.cost || {}).forEach(function(resource) {
-        var available = Math.floor(Number(stores[resource]) || 0);
-        var count = Math.min(4, available);
-        if (count > 0) {
-          preferredAmmo[resource] = count;
-          preferredAmmoWeight += count * Path.getWeight(resource);
-        }
-      });
-      if (preferredWeight + preferredAmmoWeight < capacity - 2) {
-        weapon = {name:preferred.name, score:preferred.score, weight:preferredWeight, ammo:preferredAmmo};
-      }
+    function available(name) { return Math.max(0, Math.floor(Number(stores[name]) || 0)); }
+    function addOne(name) {
+      var weight = Math.max(0.01, Number(Path.getWeight(name)) || 1);
+      if (available(name) < 1 || outfitWeight(outfit) + weight > capacity + 0.001) return false;
+      outfit[name] = 1;
+      return true;
     }
-    if (weapon) {
-      if (Object.keys(weapon.ammo).some(function (name) { return name === weapon.name; })) {
-        outfit[weapon.name] = Math.min(Number(stores[weapon.name]) || 0, weapon.ammo[weapon.name]);
-      } else {
-        outfit[weapon.name] = 1;
-        Object.keys(weapon.ammo).forEach(function (name) {
-          outfit[name] = Math.min(Number(stores[name]) || 0, weapon.ammo[name]);
+
+    // Plan combat first: rifle + ammunition, then a melee fallback. Eight
+    // bullets is the default reserve, scaled down only by actual inventory or
+    // bag capacity. Ammunition weighs little, so don't trade it for excess meat.
+    var rifleOwned = available('rifle') > 0;
+    if (rifleOwned) {
+      outfit.rifle = 1;
+      outfit.bullets = Math.min(8, available('bullets'));
+    }
+
+    var meleeOrder = ['steel sword','iron sword','energy blade','bayonet','bone spear'];
+    var bulletWeight = rifleOwned ? (Number(outfit.bullets) || 0) * Path.getWeight('bullets') : 0;
+    var meleeName = meleeOrder.find(function(name) {
+      return available(name) > 0 &&
+        outfitWeight(outfit) + Path.getWeight(name) + bulletWeight +
+        2 * Path.getWeight('cured meat') <= capacity + 0.001;
+    });
+    if (!meleeName) {
+      meleeName = meleeOrder.find(function(name) {
+        return available(name) > 0 && outfitWeight(outfit) + Path.getWeight(name) <= capacity + 0.001;
+      });
+    }
+    if (meleeName) outfit[meleeName] = 1;
+
+    // No rifle in inventory? Use the best available ranged weapon as fallback.
+    if (!rifleOwned) {
+      var rangedOrder = ['plasma rifle','laser rifle','disruptor'];
+      var rangedName = rangedOrder.find(function(name) {
+        var weapon = World.Weapons[name];
+        if (!weapon || available(name) < 1) return false;
+        return Object.keys(weapon.cost || {}).every(function(resource) {
+          return available(resource) >= Number(weapon.cost[resource] || 0);
+        }) && outfitWeight(outfit) + Path.getWeight(name) <= capacity + 0.001;
+      });
+      if (rangedName) {
+        outfit[rangedName] = 1;
+        Object.keys(World.Weapons[rangedName].cost || {}).forEach(function(resource) {
+          var count = Math.min(6, available(resource));
+          var room = Math.max(0, capacity - outfitWeight(outfit));
+          outfit[resource] = Math.min(count, Math.floor(room / Math.max(0.01, Path.getWeight(resource))));
         });
       }
-    }
-
-    // Combat loadouts need a dependable fallback: never leave a ranged-only
-    // primary as the sole weapon when a melee weapon is available. Prefer the
-    // strongest owned sword, then a bone spear, and reserve bag space for it
-    // before adding surplus food or optional supplies.
-    var primaryWeaponName = weapon && weapon.name;
-    var primaryWeapon = primaryWeaponName && World.Weapons[primaryWeaponName];
-    var primaryIsRanged = primaryWeapon && primaryWeapon.type === 'ranged';
-    if (primaryIsRanged) {
-      var meleeBackups = ['steel sword', 'iron sword', 'energy blade', 'bayonet', 'bone spear'];
-      var backupName = meleeBackups.find(function (name) {
-        return (Number(stores[name]) || 0) > 0 && World.Weapons[name] &&
-          outfitWeight(outfit) + Path.getWeight(name) <= capacity;
-      });
-      if (backupName) outfit[backupName] = 1;
-    }
-
-    // If a rifle is carried, bullets are a combat essential, not optional cargo.
-    // Keep up to four shots (or all available) before calculating the food load.
-    if (Number(outfit.rifle) > 0) {
-      var bulletsAvailable = Math.floor(Number(stores.bullets) || 0);
-      var bulletRoom = Math.max(0, Math.floor((capacity - outfitWeight(outfit)) / Path.getWeight('bullets')));
-      var bulletTarget = Math.min(4, bulletsAvailable, bulletRoom + (Number(outfit.bullets) || 0));
-      if (bulletTarget > (Number(outfit.bullets) || 0)) outfit.bullets = bulletTarget;
     }
 
     var foodMoves = Math.max(1, Number(World.MOVES_PER_FOOD) || 2);
     if ($SM.hasPerk && $SM.hasPerk('slow metabolism')) foodMoves *= 2;
     var safeRange = journeyRangeFromWater();
-    var foodTarget = Math.max(1, Math.ceil((safeRange * 2 - 1) / foodMoves));
-    var roomForFood = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
-    var food = Math.min(availableFood, foodTarget, roomForFood);
-
-    if (food < 1) {
-      // If the current weapon leaves no room for food, sacrifice it for the trip.
-      managedJourneyItems().forEach(function (name) { outfit[name] = 0; });
-      roomForFood = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
-      food = Math.min(availableFood, roomForFood);
-    }
-    if (food < 1) return false;
+    var foodTarget = Math.max(1, Math.ceil((safeRange * 2) / foodMoves) + 1);
+    var remainingRoom = Math.max(0, capacity - outfitWeight(outfit));
+    var foodRoom = Math.floor(remainingRoom / Math.max(0.01, Path.getWeight('cured meat')));
+    var food = Math.min(availableFood, foodTarget, foodRoom);
     outfit['cured meat'] = food;
 
-    function addOptional(name, wanted) {
-      var available = Math.floor(Number(stores[name]) || 0);
-      var existing = Number(outfit[name]) || 0;
-      var room = capacity - outfitWeight(outfit);
-      var spaceCount = Math.max(0, Math.floor(room / Path.getWeight(name)));
-      var add = Math.min(Math.max(0, wanted - existing), Math.max(0, available - existing), spaceCount);
-      if (add > 0) outfit[name] = existing + add;
+    // If needed, sacrifice optional gear before the melee backup; never allow
+    // optional items or a mountain of meat to displace the gun/ammunition.
+    ['medicine','hypo','glowstone','torch','charm','stim'].forEach(function(name) {
+      if (available(name) > 0 && outfitWeight(outfit) + Path.getWeight(name) <= capacity + 0.001) addOne(name);
+    });
+    if (food < 1) {
+      ['stim','charm','torch','glowstone','hypo','medicine'].forEach(function(name) {
+        if (Number(outfit[name]) > 0) outfit[name] = 0;
+      });
+      remainingRoom = Math.max(0, capacity - outfitWeight(outfit));
+      foodRoom = Math.floor(remainingRoom / Math.max(0.01, Path.getWeight('cured meat')));
+      food = Math.min(availableFood, foodTarget, foodRoom);
+      outfit['cured meat'] = food;
     }
-
-    // Add equipment for survival and landmarks only when space remains.
-    addOptional('medicine', 1);
-    addOptional('hypo', 1);
-    addOptional('glowstone', 1);
-    if (!(Number(outfit.glowstone) > 0)) addOptional('torch', 1);
-    addOptional('charm', 1);
-    addOptional('stim', 1);
-
-    // Food remains the final priority; fill any leftover bag capacity with it.
-    var spareRoom = Math.max(0, Math.floor(capacity - outfitWeight(outfit)));
-    var spareFood = Math.min(Math.max(0, availableFood - food), spareRoom);
-    if (spareFood > 0) outfit['cured meat'] += spareFood;
-
+    if (food < 1 && meleeName) {
+      outfit[meleeName] = 0;
+      remainingRoom = Math.max(0, capacity - outfitWeight(outfit));
+      foodRoom = Math.floor(remainingRoom / Math.max(0.01, Path.getWeight('cured meat')));
+      food = Math.min(availableFood, foodTarget, foodRoom);
+      outfit['cured meat'] = food;
+    }
     if (outfitWeight(outfit) > capacity + 0.001 || !(Number(outfit['cured meat']) > 0)) return false;
     setJourneyOutfit(outfit);
     return true;
